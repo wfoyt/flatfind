@@ -1,4 +1,4 @@
 {
-  "install.flatpak": {"icon": "󰏓", "label": "Flatpak", "after": "install.package", "action": "xdg-terminal-exec --app-id=org.omarchy.terminal \"$HOME/.local/bin/flatfind\""},
-  "remove.flatpak": {"icon": "󰏓", "label": "Flatpak", "after": "remove.package", "action": "xdg-terminal-exec --app-id=org.omarchy.terminal \"$HOME/.local/bin/flatfind\" remove"}
+  "install.flatpak": {"icon": "󰏓", "label": "Flatpak", "after": "install.package", "when": "[[ -x \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\" ]]", "action": "xdg-terminal-exec --app-id=org.omarchy.terminal \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\""},
+  "remove.flatpak": {"icon": "󰏓", "label": "Flatpak", "after": "remove.package", "when": "[[ -x \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\" ]]", "action": "xdg-terminal-exec --app-id=org.omarchy.terminal \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\" remove"}
 }

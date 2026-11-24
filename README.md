@@ -1,80 +1,39 @@
-<img src="assets/icon.svg" align="right" width="72" height="72" alt="">
+<img src="assets/icon.svg" align="right" width="64" height="64" alt="">
 
-# flatfind
+# Flatfind
 
-**Find, install, and remove Flatpak apps from your terminal.**
+An Omarchy plugin for finding, installing, and removing Flatpak apps. Flatfind keeps the **Apps** menu up to date when you install or remove apps through the picker or the Flatpak CLI.
 
-flatfind is a full-screen picker inspired by Omarchy. Search by app name or ID, preview package details, and select multiple apps in one session.
+## Install the plugin
 
-![flatfind showing live results for “photo,” with Photos and PhotoQt marked for installation and the details pane open.](assets/screenshots/install.png)
+Flatfind requires **Omarchy 4.5+**, **Flatpak**, **Python 3**, and **fzf 0.64+**.
 
-## Install
-
-Install **Flatpak**, **Python 3**, and **fzf 0.64 or later** and make sure they’re on your `PATH`. To browse apps, enable a Flatpak remote such as Flathub.
+Install any missing dependencies.
 
 ```sh
-git clone https://github.com/wfoyt/flatfind.git
-cd flatfind
-install -Dm755 flatfind ~/.local/bin/flatfind
+omarchy pkg add flatpak python fzf
 ```
 
-Make sure `~/.local/bin` is on your `PATH`.
-
-### Omarchy menu
-
-After installing flatfind, add the two entries from [omarchy-menu.jsonc](omarchy-menu.jsonc) to
-`~/.config/omarchy/extensions/omarchy-menu.jsonc`. If that file already exists, copy the entries
-inside its existing braces. If it doesn't exist, create the directory and copy the whole file there.
-If you added the earlier Flatfind submenus, replace their four entries with these two. Omarchy
-reloads the menu when you save it.
-
-- **Omarchy Menu → Install → Flatpak** opens the install picker.
-- **Omarchy Menu → Remove → Flatpak** opens the removal picker.
-
-On Omarchy 4.5, apply the included patch to a local menu clone to place Flatpak directly below
-Package. If you already have a menu clone, apply the patch to its `MenuModel.js`.
+In your Omarchy session, install and enable Flatfind.
 
 ```sh
-omarchy plugin clone omarchy.menu
-patch "$HOME/.config/omarchy/plugins/${USER:-$(id -un)}.menu/MenuModel.js" < omarchy-menu-order.patch
+omarchy plugin add https://github.com/wfoyt/flatfind.git --enable
 ```
 
-## Browse and manage apps
+From an existing local checkout, you can install the current copy by running `./install` from the project directory.
+
+## Use Flatfind
+
+Open the Omarchy menu and choose **Install → Flatpak** to find apps or **Remove → Flatpak** to uninstall them. Type to search, press **Tab** to select multiple apps, and press **Enter** to continue.
+
+![Flatfind searching for photo apps with two results selected and a details pane below the list.](assets/screenshots/install.png)
+
+## Uninstall the plugin
+
+Disable Flatfind, clean up its launcher links and login integration, then remove the plugin.
 
 ```sh
-flatfind           # Browse apps available to install
-flatfind photo     # Open with “photo” in the search field
-flatfind remove    # Browse installed apps
+omarchy plugin disable wfo.flatfind &&
+  python3 "$HOME/.config/omarchy/plugins/wfo.flatfind/omarchy/desktop.py" --cleanup &&
+  omarchy plugin remove wfo.flatfind
 ```
-
-Both pickers accept an optional search term, so you can also run `flatfind remove "Gear Lever"`.
-Once you start an install or removal, Flatpak automatically answers yes to its questions.
-
-![The flatfind removal picker with Gear Lever marked for removal and its installed version and source visible.](assets/screenshots/remove.png)
-
-## Keyboard controls
-
-| Key | Action |
-| --- | --- |
-| **↑ / ↓** | Move through the results. |
-| **Tab** | Mark or unmark the highlighted app. Marked apps appear in the footer. |
-| **Enter** | Continue with the marked apps, or the highlighted app if none are marked. |
-| **Alt+P** | Show or hide the details pane. |
-| **Esc** | Close the picker and return to your shell. |
-
-The details pane shows the highlighted app’s ID, source, installation, branch, and architecture, plus its version and summary when available.
-
-## Installations and catalogs
-
-By default, `flatfind` searches enabled remotes in the user and default system installations. Matching Flathub entries with the same app ID, branch, and architecture appear once. When an app is available in both installations, press **Enter** and choose **User** or **System**. The removal picker lists each installed copy separately.
-
-| Command | What it does |
-| --- | --- |
-| `flatfind --user` | Browse apps available to your user installation. |
-| `flatfind --system` | Browse apps available to the default system installation. |
-| `flatfind --installation work` | Browse a named system installation. |
-| `flatfind --runtimes` | Include runtimes in the results. |
-| `flatfind --refresh` | Refresh remote catalogs and Flathub display metadata. |
-| `flatfind remove --user` | Browse only apps installed for your user. |
-
-Search runs locally with `fzf`. flatfind caches display names and summaries from Flathub’s AppStream catalog for one day. Run `flatfind --help` or `flatfind remove --help` for all available options.

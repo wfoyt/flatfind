@@ -13,7 +13,9 @@ import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+import termios
 import time
+import tty
 from typing import NamedTuple
 from urllib.request import urlopen
 import xml.etree.ElementTree as ET
@@ -305,6 +307,24 @@ def choose_remote(name, targets):
     return choices[selected[0]] if selected else None
 
 
+def show_completion(status):
+    message = f"Failed (exit status {status})." if status else "Done!"
+    try:
+        with open("/dev/tty", "r+b", buffering=0) as terminal:
+            fd = terminal.fileno()
+            settings = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+            try:
+                terminal.write(f"\n{message} Press any key to exit.".encode())
+                terminal.read(1)
+                terminal.write(b"\n")
+            finally:
+                termios.tcsetattr(fd, termios.TCSAFLUSH, settings)
+    except (OSError, termios.error):
+        # A missing or closed terminal must not override the Flatpak status.
+        pass
+
+
 def remove_apps(scope, query):
     rows = installed_apps(scope)
     if not rows:
@@ -315,13 +335,15 @@ def remove_apps(scope, query):
     for row in pick_packages(rows, query, removing=True):
         target, ref = rows[row]
         groups[target].append(ref)
+    status = 0
     if groups:
         with open("/dev/tty") as terminal:
             for target, refs in groups.items():
                 status = subprocess.call(["flatpak", "uninstall", "--assumeyes", target, "--", *refs], stdin=terminal)
                 if status:
-                    return status
-    return 0
+                    break
+        show_completion(status)
+    return status
 
 
 def main():
@@ -370,11 +392,14 @@ def main():
         if remote is None:
             return 0
         groups[remote].append(ref)
+    status = 0
     for remote, refs in groups.items():
         status = subprocess.call(["flatpak", "install", "--assumeyes", remote.scope, "--", remote.name, *refs])
         if status:
-            return status
-    return 0
+            break
+    if groups:
+        show_completion(status)
+    return status
 
 
 if __name__ == "__main__":
