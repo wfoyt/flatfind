@@ -1,0 +1,4 @@
+{
+  "install.flatpak": {"icon": "󰏓", "label": "Flatpak", "after": "install.package", "action": "xdg-terminal-exec --app-id=org.omarchy.terminal \"$HOME/.local/bin/flatfind\""},
+  "remove.flatpak": {"icon": "󰏓", "label": "Flatpak", "after": "remove.package", "action": "xdg-terminal-exec --app-id=org.omarchy.terminal \"$HOME/.local/bin/flatfind\" remove"}
+}

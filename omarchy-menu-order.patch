@@ -1,0 +1,17 @@
+--- MenuModel.js
++++ MenuModel.js
+@@ -25,2 +25,3 @@
+     parent: parent,
++    after: typeof value.after === "string" ? value.after : "",
+     kind: kind,
+@@ -101,3 +102,9 @@
+       if (!entry || !entry.id) continue
+-      if (!nextItems[entry.id]) nextOrder.push(entry.id)
++      if (!nextItems[entry.id]) {
++        var anchor = entry.after && nextItems[entry.after]
++        if (anchor && anchor.parent === entry.parent)
++          nextOrder.splice(nextOrder.indexOf(anchor.id) + 1, 0, entry.id)
++        else
++          nextOrder.push(entry.id)
++      }
+       var prior = nextItems[entry.id] || {}

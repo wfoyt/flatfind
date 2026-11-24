@@ -20,6 +20,25 @@ install -Dm755 flatfind ~/.local/bin/flatfind
 
 Make sure `~/.local/bin` is on your `PATH`.
 
+### Omarchy menu
+
+After installing flatfind, add the two entries from [omarchy-menu.jsonc](omarchy-menu.jsonc) to
+`~/.config/omarchy/extensions/omarchy-menu.jsonc`. If that file already exists, copy the entries
+inside its existing braces. If it doesn't exist, create the directory and copy the whole file there.
+If you added the earlier Flatfind submenus, replace their four entries with these two. Omarchy
+reloads the menu when you save it.
+
+- **Omarchy Menu → Install → Flatpak** opens the install picker.
+- **Omarchy Menu → Remove → Flatpak** opens the removal picker.
+
+On Omarchy 4.5, apply the included patch to a local menu clone to place Flatpak directly below
+Package. If you already have a menu clone, apply the patch to its `MenuModel.js`.
+
+```sh
+omarchy plugin clone omarchy.menu
+patch "$HOME/.config/omarchy/plugins/${USER:-$(id -un)}.menu/MenuModel.js" < omarchy-menu-order.patch
+```
+
 ## Browse and manage apps
 
 ```sh
@@ -28,7 +47,8 @@ flatfind photo     # Open with “photo” in the search field
 flatfind remove    # Browse installed apps
 ```
 
-Both pickers accept an optional search term, so you can also run `flatfind remove "Gear Lever"`. Flatpak asks for confirmation before installing or removing apps.
+Both pickers accept an optional search term, so you can also run `flatfind remove "Gear Lever"`.
+Once you start an install or removal, Flatpak automatically answers yes to its questions.
 
 ![The flatfind removal picker with Gear Lever marked for removal and its installed version and source visible.](assets/screenshots/remove.png)
 

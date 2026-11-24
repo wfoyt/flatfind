@@ -318,7 +318,7 @@ def remove_apps(scope, query):
     if groups:
         with open("/dev/tty") as terminal:
             for target, refs in groups.items():
-                status = subprocess.call(["flatpak", "uninstall", target, "--", *refs], stdin=terminal)
+                status = subprocess.call(["flatpak", "uninstall", "--assumeyes", target, "--", *refs], stdin=terminal)
                 if status:
                     return status
     return 0
@@ -371,7 +371,7 @@ def main():
             return 0
         groups[remote].append(ref)
     for remote, refs in groups.items():
-        status = subprocess.call(["flatpak", "install", remote.scope, "--", remote.name, *refs])
+        status = subprocess.call(["flatpak", "install", "--assumeyes", remote.scope, "--", remote.name, *refs])
         if status:
             return status
     return 0
