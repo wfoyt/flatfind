@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "wfo.flatfind",
+  "name": "Flatfind",
+  "version": "1.0.0",
+  "author": "wfoyt",
+  "description": "Find and manage Flatpak apps and keep the Omarchy Apps menu up to date.",
+  "kinds": ["service"],
+  "entryPoints": {"service": "Service.qml"}
+}

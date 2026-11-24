@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+plugins_dir="$HOME/.config/omarchy/plugins"
+target="$plugins_dir/wfo.flatfind"
+
+omarchy plugin validate "$source_dir"
+omarchy-shell shell ping >/dev/null
+
+mkdir -p -- "$plugins_dir"
+stage=$(mktemp -d -- "$plugins_dir/.flatfind.XXXXXXXX")
+trap 'rm -rf -- "$stage"' EXIT
+cp -a -- "$source_dir"/{manifest.json,Service.qml,flatfind,omarchy,omarchy-menu.jsonc} "$stage/"
+if ! mv -T --no-clobber -- "$stage" "$target" || [[ -d $stage ]]; then
+    printf 'Flatfind is already installed at %s. Enable it with omarchy plugin enable wfo.flatfind.\n' "$target" >&2
+    exit 1
+fi
+
+omarchy-shell shell rescanPlugins
+for ((attempt = 0; attempt < 40; attempt++)); do
+    if omarchy plugin list --json | jq -e 'any(.[]; .id == "wfo.flatfind")' >/dev/null; then
+        omarchy plugin enable wfo.flatfind
+        exit
+    fi
+    sleep 0.05
+done
+printf 'Flatfind was copied to %s. Run omarchy plugin enable wfo.flatfind once the shell has loaded it.\n' "$target" >&2
+exit 1
