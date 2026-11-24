@@ -1,33 +1,51 @@
-<img src="assets/icon.svg" width="64" height="64" alt="">
+<img src="assets/icon.svg" align="right" width="80" height="80" alt="">
 
 # flatfind
 
-An Omarchy-style terminal picker for Flatpak packages. Type part of an app name or ID, move with the arrow keys, and press **Enter** to start installation. Use **Tab** to mark multiple results, **Alt+P** to toggle the details pane, or **Esc** to quit.
+Find, install, and remove Flatpak apps from a full-screen terminal picker inspired by Omarchy. Search by app name or ID and see matches as you type.
 
-## Install
+## Quick start
 
-With Python 3, `fzf` (0.64 or later), and Flatpak on your `PATH`, run this from the checkout:
+You’ll need **Flatpak**, **Python 3**, and **fzf 0.64 or later** on your `PATH`. To install from source, clone the repository and copy the executable into `~/.local/bin`.
 
 ```sh
+git clone https://github.com/wfoyt/flatfind.git
+cd flatfind
 install -Dm755 flatfind ~/.local/bin/flatfind
 ```
 
-## Use
+Make sure `~/.local/bin` is on your `PATH`, then run `flatfind` to browse apps or `flatfind remove` to browse installed apps. Add a search term to either command to prefill the picker.
 
 ```sh
-flatfind                       # Browse enabled user and system remotes
-flatfind firefox               # Start with a search
-flatfind --user                # Browse user remotes only
-flatfind --system              # Browse default system remotes only
-flatfind --installation work   # Browse a named system installation
-flatfind --runtimes             # Include runtimes alongside apps
-flatfind --refresh             # Ask Flatpak to refresh the remote catalogs
-flatfind remove                # Browse installed apps and uninstall selected ones
-flatfind remove --user         # Browse only apps installed for your user
+flatfind firefox
+flatfind remove firefox
 ```
 
-Like Omarchy’s package picker, `flatfind` loads the catalog once and uses `fzf` to rank matches locally as you type. The list shows package names. The details pane below shows the highlighted package’s ID, source, branch, architecture, and any available version and description. Flatpak handles installation and confirmation for the selected package.
+## Keyboard controls
 
-Flathub display names and summaries come from its AppStream catalog. `flatfind` caches this metadata for a day and refreshes it on demand with `--refresh`. When a Flathub app is available for the same branch and architecture in both scopes, it appears once. Press **Enter** and choose **User** or **System**. If only one scope is available, `flatfind` goes directly to Flatpak’s install prompt.
+| Key | Action |
+| --- | --- |
+| **↑ / ↓** | Move through the results. |
+| **Tab** | Mark or unmark the highlighted app. The footer appears while apps are marked. |
+| **Enter** | Submit the marked apps, or the highlighted app when none are marked. |
+| **Alt+P** | Show or hide the details pane. |
+| **Esc** | Close the picker and return to your shell. |
 
-Both pickers fill the terminal and restore your shell when they close. **Tab** marks or unmarks an app. The footer lists marked apps and disappears when the selection is empty. **Enter** submits the marked apps or, when none are marked, the highlighted app. In `flatfind remove`, the details pane shows the installation each entry belongs to.
+The details pane shows the highlighted app’s ID, source, installation, branch, and architecture, plus its version and summary when available. Flatpak asks for confirmation before making changes.
+
+## Installations and catalogs
+
+By default, `flatfind` searches enabled remotes in the user and default system installations. If the same Flathub app, branch, and architecture are available in both, it appears once. Choose **User** or **System** after pressing **Enter**. `flatfind remove` lists installed copies separately so you can choose which one to uninstall.
+
+| Command | What it does |
+| --- | --- |
+| `flatfind --user` | Browse apps available to your user installation. |
+| `flatfind --system` | Browse apps available to the default system installation. |
+| `flatfind --installation work` | Browse a named system installation. |
+| `flatfind --runtimes` | Include runtimes in the results. |
+| `flatfind --refresh` | Refresh remote catalogs and Flathub display metadata. |
+| `flatfind remove --user` | Browse only apps installed for your user. |
+
+Search runs locally with `fzf`. Flathub display names and summaries come from its AppStream catalog and are cached for a day.
+
+Run `flatfind --help` or `flatfind remove --help` to see the available flags.
