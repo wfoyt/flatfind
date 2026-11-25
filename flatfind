@@ -363,8 +363,9 @@ def choose_remote(name, targets):
     if len(targets) == 1:
         return targets[0]
 
-    labels = {"--user": "User (just you)", "--system": "System (all users)"}
-    choices = {labels[remote.scope]: remote for remote in targets}
+    labels = {"--user": "User (just you)", "--system": "System (all users) · Recommended"}
+    ordered_targets = sorted(targets, key=lambda remote: remote.scope != "--system")
+    choices = {labels[remote.scope]: remote for remote in ordered_targets}
     options = [
         "--no-input", "--no-info", "--layout=reverse", "--border=rounded",
         "--border-label= Install scope ", f"--header=Install {name} for…",
