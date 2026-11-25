@@ -69,6 +69,20 @@ class CatalogTests(unittest.TestCase):
                 self.assertEqual(metadata(refresh=True), cached)
             self.assertEqual(json.loads(cache.read_text(encoding="utf-8")), cached)
 
+    def test_default_installation_alias_lists_default_system_apps(self):
+        output = "org.example.Test/x86_64/stable\tTest\t\t\treview\tsystem\n"
+        with patch.object(sys, "argv", [str(PICKER), "remove", "--installation", "default"]), \
+                patch("shutil.which", return_value="/usr/bin/tool"), \
+                patch("subprocess.run", side_effect=[
+                    subprocess.CompletedProcess([], 0, output),
+                    subprocess.CompletedProcess([], 130, ""),
+                ]) as run, self.assertRaises(SystemExit) as result:
+            runpy.run_path(str(PICKER), run_name="__main__")
+        self.assertEqual(result.exception.code, 0)
+        self.assertIn("--system", run.call_args_list[0].args[0])
+        self.assertIn("org.example.Test", run.call_args_list[1].kwargs["input"])
+        self.assertEqual(run.call_count, 2)
+
     def test_remove_list_timeout_has_a_cli_error(self):
         stderr = io.StringIO()
         with patch.object(sys, "argv", [str(PICKER), "remove"]), \

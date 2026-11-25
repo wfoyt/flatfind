@@ -24,7 +24,9 @@ omarchy pkg add flatpak python fzf
 omarchy plugin add https://github.com/wfoyt/flatpak-companion.git --enable
 ```
 
-Flatpak Companion searches your configured Flatpak remotes. Run `flatpak remotes` to check which sources are available.
+Flatpak Companion searches your configured Flatpak remotes. Run `flatpak remotes` to check which sources are available. When Flathub is configured, opening the install picker also uses curl to fetch display names and descriptions from `dl.flathub.org`. It caches them for 24 hours under `$XDG_CACHE_HOME/flatfind` (by default `~/.cache/flatfind`).
+
+While enabled, the service adds the Install and Remove menu entries and watches local Flatpak desktop exports. It creates fallback launcher links for apps the session cannot see and links the Flatpak environment script into UWSM for future logins. Disabling stops the watcher. Use the uninstall steps below to remove the integrations.
 
 If you already have a local checkout, run `./install` from the project directory to install that copy.
 
@@ -36,7 +38,7 @@ If you installed the plugin from Git before the rename, run `omarchy plugin upda
 
 Open **Install → Flatpak** in the Omarchy menu. Search by app name or ID, then check **Details** for the source, branch, architecture, and any available version and description.
 
-![Flatpak Companion searches Flathub for VLC and shows the user and system install choices.](assets/demos/vlc-install.gif)
+![Flatpak Companion searches Flathub for VLC and shows the user and system install choices.](assets/demos/vlc-picker.gif)
 
 Press **Enter** to review your selections. If an app is available from Flathub in both the user and system installations, choose where to install it. Flatpak lists the apps, dependencies, source, and requested permissions before asking you to confirm. Answer **n** to cancel a transaction.
 
@@ -46,7 +48,7 @@ Installed apps appear in the Omarchy **Apps** menu. Flatpak Companion keeps the 
 
 ![Flatpak Companion searches installed apps for Gear Lever and selects it for removal.](assets/demos/gear-lever-remove.gif)
 
-Open **Remove → Flatpak** to search installed apps. Press **Enter** to remove the highlighted app or your batch selection, or **Esc** to close the picker before removing anything.
+Open **Remove → Flatpak** to search installed apps. Press **Enter** to review the highlighted app or batch selection. Flatpak asks for confirmation for each installation. Answer **n** to cancel that transaction.
 
 ## Picker controls
 
@@ -56,13 +58,13 @@ Open **Remove → Flatpak** to search installed apps. Press **Enter** to remove 
 | **Tab** | Toggle selection for a batch install or removal. |
 | **Alt+P** | Show or hide the details pane. |
 | **Alt+J** / **Alt+K** | Scroll the details pane down or up. |
-| **Enter** | Review the install or start removal. |
+| **Enter** | Review the install or removal. |
 | **Esc** | Close the picker. |
 
 <details>
   <summary>See batch selection</summary>
 
-  <img src="assets/screenshots/install.png" alt="The Flatpak Companion picker shows Photos and PhotoQt selected, with Photobooth highlighted in the details pane.">
+  <img src="assets/screenshots/batch-selection.png" alt="The Flatpak Companion picker shows Photos and PhotoQt selected, with Photobooth highlighted in the details pane.">
 </details>
 
 Flatpak asks for confirmation separately for each remote and installation scope in an install batch.

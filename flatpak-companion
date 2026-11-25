@@ -338,7 +338,7 @@ def pick_packages(rows, query, *, removing=False):
     )
     # fzf searches only visible fields when using --with-nth. Put the ID and
     # metadata past the right edge with a tab stop wider than a Linux TTY.
-    title, prompt, action = (f"{NAME} · Remove", "Search installed apps", "Remove") if removing else (
+    title, prompt, action = (f"{NAME} · Remove", "Search installed apps", "Review removal") if removing else (
         NAME, "Search Flatpak", "Review install"
     )
     selection_footer = (
@@ -411,7 +411,7 @@ def remove_apps(scope, query):
     if groups:
         with open("/dev/tty") as terminal:
             for target, refs in groups.items():
-                status = subprocess.call(["flatpak", "uninstall", "--assumeyes", target, "--", *refs], stdin=terminal)
+                status = subprocess.call(["flatpak", "uninstall", target, "--", *refs], stdin=terminal)
                 if status:
                     break
         show_completion(status)
@@ -447,6 +447,8 @@ def main():
             parser.exit(1, f"{COMMAND}: {tool} is required and was not found on PATH\n")
 
     target = args.scope if args.installation is None else f"--installation={args.installation}"
+    if args.installation == "default":
+        target = "--system"
     query = " ".join(args.query)
     if removing:
         return remove_apps(target, query)
