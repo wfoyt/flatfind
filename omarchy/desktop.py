@@ -20,19 +20,19 @@ HOME = Path.home()
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
 DATA_HOME = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share")
 CLI = HOME / ".local/bin/flatpak-companion"
-INSTALLED = HOME / ".config/omarchy/plugins/wfo.flatfind"
+INSTALLED = HOME / ".config/omarchy/plugins/wfoyt.flatpak-companion"
 # Keep consent with this installation so removing the plugin also revokes it.
 CONSENT = INSTALLED / ".desktop-integration-enabled"
 APPLICATIONS = DATA_HOME / "applications"
-# Keep launcher symlinks and the watcher lock at their existing paths.
-EXPORT_LINKS = DATA_HOME / "flatfind/desktop-exports"
-# Keep the existing UWSM drop-in and its symlink valid across updates.
-UWSM_SOURCE = REPO / "omarchy/uwsm/60-flatfind-flatpak.sh"
+STATE_DIR = DATA_HOME / "flatpak-companion"
+EXPORT_LINKS = STATE_DIR / "desktop-exports"
+UWSM_SOURCE = INSTALLED / "omarchy/uwsm/60-flatpak-companion.sh"
 UWSM_DEST = CONFIG_HOME / "uwsm/env.d" / UWSM_SOURCE.name
+UNIT = "flatpak-companion-cleanup"
+UNIT_HEADER = "# Managed by Flatpak Companion\n"
+UNIT_DIR = CONFIG_HOME / "systemd/user"
+CLEANUP_DIR = STATE_DIR / "removal"
 MENU_FILE = HOME / ".config/omarchy/extensions/omarchy-menu.jsonc"
-PLUGIN_PICKER = "$HOME/.config/omarchy/plugins/wfo.flatfind/flatpak-companion"
-PREVIOUS_PLUGIN_PICKER = "$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind"
-LEGACY_PICKER = "$HOME/.local/bin/flatfind"
 # Keep offsets in the original file and leave punctuation inside strings alone.
 JSON_STRING = r'"(?:\\.|[^"\\])*"'
 JSONC_COMMENTS = re.compile(JSON_STRING + r"|^[ \t]*//[^\r\n]*", re.M)
@@ -60,25 +60,8 @@ def object_members(text, opening):
         offset = len(text) - len(rest) + 1
 
 
-def previous_menu_entries(entry):
-    action = entry["action"].rsplit(" && ", 1)[-1]
-    guarded = {
-        **entry,
-        "when": entry["when"].replace(PLUGIN_PICKER, PREVIOUS_PLUGIN_PICKER),
-        "action": entry["action"].replace(PLUGIN_PICKER, PREVIOUS_PLUGIN_PICKER),
-    }
-    executable_only = {
-        **entry,
-        "when": f'[[ -x "{PREVIOUS_PLUGIN_PICKER}" ]]',
-        "action": action.replace(PLUGIN_PICKER, PREVIOUS_PLUGIN_PICKER),
-    }
-    standalone = {name: value for name, value in entry.items() if name != "when"}
-    standalone["action"] = action.replace(PLUGIN_PICKER, LEGACY_PICKER)
-    return guarded, executable_only, standalone
-
-
 def menu_with_entries(original, entries, *, cleanup=False):
-    """Preserve custom rows and migrate menu rows from earlier releases."""
+    """Add or remove plugin rows while preserving custom rows and comments."""
     def mask(match):
         token = match[0]
         return token if token.startswith('"') else " " * len(token)
@@ -102,39 +85,37 @@ def menu_with_entries(original, entries, *, cleanup=False):
     else:
         source = menu
 
-    members = list(object_members(clean, opening))
-    # Leave ambiguous duplicate keys alone, including a user's earlier row.
-    key_counts = Counter(key for key, _ in members)
-    replacements = []
-    removed_tail = False
-    for index, (key, (key_start, start, end)) in enumerate(reversed(members)):
-        entry = entries.get(key)
-        shipped = entry is not None and key_counts[key] == 1 and source[key] in (entry, *previous_menu_entries(entry))
-        if cleanup:
+    if cleanup:
+        members = list(object_members(clean, opening))
+        # Leave ambiguous duplicate keys alone, including a user's earlier row.
+        key_counts = Counter(key for key, _ in members)
+        removals = []
+        removed_tail = False
+        for index, (key, (key_start, _, end)) in enumerate(reversed(members)):
+            shipped = key in entries and key_counts[key] == 1 and source[key] == entries[key]
             if shipped:
-                replacements.append((key_start, end, ""))
+                removals.append((key_start, end))
             # Remove the trailing separator as well when deleting the last rows.
             if shipped or removed_tail:
                 rest = uncommented[end:].lstrip()
                 if rest.startswith(","):
                     comma = len(uncommented) - len(rest)
-                    replacements.append((comma, comma + 1, ""))
+                    removals.append((comma, comma + 1))
             removed_tail = shipped and (removed_tail or index == 0)
-        elif shipped and source[key] != entry:
-            replacements.append((start, end, json.dumps(entry, ensure_ascii=False)))
-    for start, end, value in sorted(replacements, reverse=True):
-        original = original[:start] + value + original[end:]
+        for start, end in sorted(removals, reverse=True):
+            original = original[:start] + original[end:]
+        return original
 
     missing = {key: value for key, value in entries.items() if key not in source}
-    if cleanup or not missing:
+    if not missing:
         return original
     rows = [f"  {json.dumps(key)}: {json.dumps(value, ensure_ascii=False)}" for key, value in missing.items()]
     insertion = ",\n".join(rows) + ("," if source else "")
     return original[:opening + 1] + "\n" + insertion + "\n" + original[opening + 1:]
 
 
-def update_menu(*, cleanup=False):
-    entries = json.loads((REPO / "omarchy-menu.jsonc").read_text(encoding="utf-8"))
+def update_menu(*, cleanup=False, entries_file=REPO / "omarchy-menu.jsonc"):
+    entries = json.loads(entries_file.read_text(encoding="utf-8"))
     menu_path = MENU_FILE.resolve()
     try:
         original = menu_path.read_bytes()
@@ -235,9 +216,13 @@ def native_desktop_ids(roots):
 def reconcile_exports(exports, visible):
     fallback = {}
     for export in exports:
-        for entry in (export / "applications").glob("*.desktop"):
-            if entry.is_file():
-                fallback.setdefault(entry.name, entry)
+        try:
+            with os.scandir(export / "applications") as entries:
+                for entry in entries:
+                    if entry.name.endswith(".desktop") and entry.is_file():
+                        fallback.setdefault(entry.name, Path(entry.path))
+        except FileNotFoundError:
+            continue
     needed = fallback.keys() - visible
     for link in EXPORT_LINKS.glob("*.desktop"):
         if not link.is_symlink() or link.name in needed:
@@ -245,15 +230,24 @@ def reconcile_exports(exports, visible):
         local = APPLICATIONS / link.name
         if links_to(local, link):
             local.unlink(missing_ok=True)
+        elif link.name in fallback and not os.path.lexists(local):
+            # An Apps menu removal deleted the local launcher. Remember it
+            # while the app remains installed by retaining the private link.
+            continue
         link.unlink(missing_ok=True)
     for name in needed:
         source = fallback[name]
         link = EXPORT_LINKS / name
-        if link.is_symlink() and not links_to(link, source):
-            link.unlink(missing_ok=True)
-        link_if_absent(link, source)
-        if links_to(link, source):
-            link_if_absent(APPLICATIONS / name, link)
+        local = APPLICATIONS / name
+        if link.is_symlink() and not os.path.lexists(local):
+            continue
+        if link.exists() and not link.is_symlink():
+            continue
+        link_if_absent(local, link)
+        if links_to(local, link):
+            if link.is_symlink() and not links_to(link, source):
+                link.unlink(missing_ok=True)
+            link_if_absent(link, source)
 
     # Quickshell watches this directory on Omarchy. A directory change also
     # rescans Flatpak export dirs that were missing when Quickshell started.
@@ -269,37 +263,131 @@ def watch_exports():
     last_exports = None
     next_discovery = 0
     next_native_scan = 0
+    retry_at = 0
     while True:
         now = time.monotonic()
         if now >= next_discovery:
             exports = installation_exports()
             next_discovery = now + 60
-        export_stamps = tuple((root, directory_stamp(root / "applications")) for root in exports)
-        if export_stamps != last_exports or now >= next_native_scan:
-            visible = native_desktop_ids(native)
-            current = (export_stamps, visible)
-            if current != last:
-                reconcile_exports(exports, visible)
-                last = current
-            next_native_scan = now + 2
-            last_exports = export_stamps
+        if now >= retry_at:
+            try:
+                export_stamps = tuple((root, directory_stamp(root / "applications")) for root in exports)
+                if export_stamps != last_exports or now >= next_native_scan:
+                    visible = native_desktop_ids(native)
+                    current = (export_stamps, visible)
+                    if current != last:
+                        reconcile_exports(exports, visible)
+                        last = current
+                    next_native_scan = now + 2
+                    last_exports = export_stamps
+            except OSError as error:
+                log(f"could not sync Flatpak launchers, retrying: {error}")
+                retry_at = now + 2
         # Keep no orphan watcher when the Quickshell process exits or reloads.
         if select.select([sys.stdin], [], [], 0.5)[0] and not sys.stdin.buffer.read1(1):
             return
 
 
+def register_cleanup():
+    # Omarchy removes the plugin checkout without invoking a plugin hook.
+    # Keep a copy of just the cleanup inputs beside the plugin's launcher state.
+    def unit_path(path):
+        return str(path).replace("%", "%%")
+
+    def unit_quote(path):
+        return json.dumps(unit_path(path), ensure_ascii=False)
+
+    path_unit = UNIT_DIR / (UNIT + ".path")
+    service_unit = UNIT_DIR / (UNIT + ".service")
+    path_config = UNIT_HEADER + (
+        "[Unit]\nDescription=Watch for Flatpak Companion removal\n"
+        f"[Path]\nPathChanged={unit_path(INSTALLED.parent)}\n"
+        "[Install]\nWantedBy=default.target\n"
+    )
+    service_config = UNIT_HEADER + (
+        "[Unit]\nDescription=Clean up after Flatpak Companion removal\n"
+        f"ConditionPathExists=!{unit_path(INSTALLED / 'manifest.json')}\n"
+        "[Service]\nType=oneshot\n"
+        f"Environment={unit_quote(f'XDG_CONFIG_HOME={CONFIG_HOME}')} "
+        f"{unit_quote(f'XDG_DATA_HOME={DATA_HOME}')}\n"
+        "ExecStart=:/usr/bin/python3 "
+        f"{unit_quote(CLEANUP_DIR / 'desktop.py')} --cleanup-removed {unit_quote(INSTALLED)}\n"
+        "[Install]\nWantedBy=default.target\n"
+    )
+    for unit in (path_unit, service_unit):
+        if os.path.lexists(unit) and not owns_unit(unit):
+            raise ValueError(f"An existing file at {unit} prevents cleanup registration.")
+    files = {
+        CLEANUP_DIR / "desktop.py": Path(__file__).read_bytes(),
+        CLEANUP_DIR / "omarchy-menu.jsonc": (REPO / "omarchy-menu.jsonc").read_bytes(),
+        path_unit: path_config.encode(),
+        service_unit: service_config.encode(),
+    }
+    for target, contents in files.items():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(dir=target.parent, delete=False) as staged:
+            staged_path = Path(staged.name)
+            try:
+                staged.write(contents)
+                staged.close()
+                staged_path.replace(target)
+            finally:
+                staged_path.unlink(missing_ok=True)
+    subprocess.run(["systemctl", "--user", "enable", "--now", path_unit.name, service_unit.name],
+                   check=True, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+
+def owns_unit(unit):
+    if unit.is_symlink() or not unit.is_file():
+        return False
+    with unit.open("rb") as stream:
+        return stream.read(len(UNIT_HEADER)) == UNIT_HEADER.encode()
+
+
+def unregister_cleanup():
+    path_unit = UNIT_DIR / (UNIT + ".path")
+    service_unit = UNIT_DIR / (UNIT + ".service")
+    units = [unit for unit in (path_unit, service_unit) if owns_unit(unit)]
+    if path_unit in units:
+        subprocess.run(["systemctl", "--user", "stop", path_unit.name], check=True, timeout=10)
+    if units:
+        subprocess.run(["systemctl", "--user", "disable", *(unit.name for unit in units)],
+                       check=True, timeout=10)
+        for unit in units:
+            unit.unlink(missing_ok=True)
+    for name in ("desktop.py", "omarchy-menu.jsonc"):
+        (CLEANUP_DIR / name).unlink(missing_ok=True)
+    if units:
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=10)
+
+
+def cleanup(source, entries_file):
+    (source / CONSENT.name).unlink(missing_ok=True)
+    for path, target in ((CLI, source / "flatpak-companion"),
+                         (UWSM_DEST, source / "omarchy/uwsm" / UWSM_DEST.name)):
+        if links_to(path, target):
+            path.unlink(missing_ok=True)
+    if any(EXPORT_LINKS.glob("*.desktop")):
+        reconcile_exports((), set())
+    update_menu(cleanup=True, entries_file=entries_file)
+    unregister_cleanup()
+
+
 def install_cli():
-    target = REPO / "flatpak-companion"
-    link_if_absent(CLI, target)
-    if not links_to(CLI, target):
+    if INSTALLED.resolve() != REPO:
+        raise ValueError("Install the plugin under its manifest ID, wfoyt.flatpak-companion.")
+    target = INSTALLED / "flatpak-companion"
+    if os.path.lexists(CLI) and not links_to(CLI, target):
         raise ValueError(f"A different command exists at {CLI}. Use {target} directly.")
+    register_cleanup()
+    link_if_absent(CLI, target)
 
 
 def setup():
     if INSTALLED.resolve() != REPO:
-        raise ValueError("Run the installed flatpak-companion setup command after installing the CLI.")
+        raise ValueError("Run flatpak-companion setup from the wfoyt.flatpak-companion installation.")
     print(f"Add Flatpak rows to {MENU_FILE}, link {UWSM_DEST} for future logins, "
-          f"and enable wfo.flatfind to maintain launcher links in {APPLICATIONS}.")
+          f"and enable wfoyt.flatpak-companion to maintain launcher links in {APPLICATIONS}.")
     try:
         answer = input("Set up Omarchy integration? [y/N] ")
     except EOFError:
@@ -313,12 +401,13 @@ def setup():
     for _ in range(40):
         result = subprocess.run(["omarchy", "plugin", "list", "--json"], check=True,
                                 capture_output=True, text=True, timeout=5)
-        plugin = next((p for p in json.loads(result.stdout) if p.get("id") == "wfo.flatfind"), None)
+        plugin = next((p for p in json.loads(result.stdout) if p.get("id") == "wfoyt.flatpak-companion"), None)
         if plugin is not None:
             break
         time.sleep(0.05)
     else:
         raise ValueError("Omarchy has not discovered Flatpak Companion. Retry setup in your Omarchy session.")
+    register_cleanup()
     update_menu()
     link_if_absent(UWSM_DEST, UWSM_SOURCE)
     if not links_to(UWSM_DEST, UWSM_SOURCE):
@@ -326,10 +415,10 @@ def setup():
     # On first setup an already enabled service has finished its CLI-only startup.
     if not CONSENT.is_file():
         if plugin.get("enabled"):
-            subprocess.run(["omarchy", "plugin", "disable", "wfo.flatfind"], check=True, timeout=10)
+            subprocess.run(["omarchy", "plugin", "disable", "wfoyt.flatpak-companion"], check=True, timeout=10)
         with CONSENT.open("x"):
             pass
-    subprocess.run(["omarchy", "plugin", "enable", "wfo.flatfind"], check=True, timeout=10)
+    subprocess.run(["omarchy", "plugin", "enable", "wfoyt.flatpak-companion"], check=True, timeout=10)
     print("Flatpak Companion desktop integration is enabled.")
 
 
@@ -339,6 +428,7 @@ def main():
     actions.add_argument("--install-cli", action="store_true")
     actions.add_argument("--setup", action="store_true")
     actions.add_argument("--cleanup", action="store_true", help="remove Flatpak Companion's menu entries, launcher links, and UWSM drop-in")
+    actions.add_argument("--cleanup-removed", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.setup:
         setup()
@@ -347,11 +437,11 @@ def main():
         install_cli()
         print(f"Installed {CLI}. Run flatpak-companion setup for Omarchy integration.")
         return
-    if not args.cleanup:
+    if not (args.cleanup or args.cleanup_removed):
         try:
             install_cli()
-        except (OSError, ValueError) as error:
-            log(error)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            log(getattr(error, "stderr", None) or error)
         if not CONSENT.is_file():
             return
     EXPORT_LINKS.mkdir(parents=True, exist_ok=True)
@@ -363,15 +453,14 @@ def main():
             fcntl.flock(lock, mode)
         except BlockingIOError:
             raise SystemExit("Disable the Flatpak Companion plugin before cleaning up its launcher links.")
+        if args.cleanup_removed:
+            if not (INSTALLED / "manifest.json").exists():
+                cleanup(args.cleanup_removed, Path(__file__).with_name("omarchy-menu.jsonc"))
+            return
         if args.cleanup:
-            CONSENT.unlink(missing_ok=True)
-            update_menu(cleanup=True)
-            if any(EXPORT_LINKS.glob("*.desktop")):
-                reconcile_exports((), set())
-            if links_to(UWSM_DEST, UWSM_SOURCE):
-                UWSM_DEST.unlink(missing_ok=True)
-            if links_to(CLI, REPO / "flatpak-companion"):
-                CLI.unlink()
+            if INSTALLED.resolve() != REPO:
+                raise ValueError("Run cleanup from the installed plugin after disabling it.")
+            cleanup(INSTALLED, REPO / "omarchy-menu.jsonc")
             return
         watch_exports()
 
@@ -380,4 +469,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        raise SystemExit(str(error)) from error
+        raise SystemExit(getattr(error, "stderr", None) or str(error)) from error

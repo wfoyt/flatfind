@@ -3,7 +3,7 @@ set -euo pipefail
 
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 plugins_dir="$HOME/.config/omarchy/plugins"
-target="$plugins_dir/wfo.flatfind"
+target="$plugins_dir/wfoyt.flatpak-companion"
 
 if [[ -e $target || -L $target ]]; then
     if [[ $source_dir == "$(realpath -e -- "$target")" ]]; then
@@ -23,9 +23,9 @@ fi
 mkdir -p -- "$plugins_dir"
 stage=$(mktemp -d -- "$plugins_dir/.flatpak-companion.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
-cp -a -- "$source_dir"/{install,manifest.json,Service.qml,flatpak-companion,flatfind,omarchy,omarchy-menu.jsonc} "$stage/"
+cp -a -- "$source_dir"/{install,manifest.json,Service.qml,flatpak-companion,omarchy,i18n,omarchy-menu.jsonc} "$stage/"
 if ! mv -T --no-clobber -- "$stage" "$target" || [[ -d $stage ]]; then
-    printf 'Flatpak Companion is already installed at %s. Enable it with omarchy plugin enable wfo.flatfind.\n' "$target" >&2
+    printf 'Flatpak Companion is already installed at %s. Enable it with omarchy plugin enable wfoyt.flatpak-companion.\n' "$target" >&2
     exit 1
 fi
 

@@ -5,6 +5,7 @@ import os
 import json
 from pathlib import Path
 import runpy
+import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -60,7 +61,7 @@ class CatalogTests(unittest.TestCase):
     def test_catalog_uses_stale_metadata_after_download_failure(self):
         metadata = picker["flathub_metadata"]
         with TemporaryDirectory() as directory, patch.dict("os.environ", XDG_CACHE_HOME=directory):
-            cache = Path(directory) / "flatfind/flathub-x86_64.json"
+            cache = Path(directory) / "flatpak-companion/flathub-x86_64.json"
             cache.parent.mkdir()
             cached = {REF: ["Cached name", "Cached summary"]}
             cache.write_text(json.dumps(cached), encoding="utf-8")
@@ -96,36 +97,24 @@ class CatalogTests(unittest.TestCase):
 
 
 class MenuTests(unittest.TestCase):
-    def test_migrate_shipped_rows_and_preserve_custom_rows_on_cleanup(self):
+    def test_add_and_remove_shipped_rows_while_preserving_custom_rows(self):
         update = desktop["menu_with_entries"]
-        executable = '$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind'
-        action = f'xdg-terminal-exec --app-id=org.omarchy.terminal "{executable}"'
-        legacy = {"icon": "󰏓", "label": "Flatpak", "after": "install.package",
-                  "action": action.replace(executable, "$HOME/.local/bin/flatfind")}
-        previous = {**legacy, "action": action, "when": f'[[ -x "{executable}" ]]'}
         custom = {**ENTRIES["remove.flatpak"], "label": "My Flatpak menu"}
-        guarded = {
-            name: value.replace("wfo.flatfind/flatpak-companion", "wfo.flatfind/flatfind")
-            for name, value in ENTRIES["install.flatpak"].items()
-        }
-        for old_entry in (guarded, previous, legacy):
-            with self.subTest(old_entry=old_entry):
-                original = (
-                    '{"items": {\n'
-                    '  "remove.flatpak": ' + json.dumps(custom) + ',\n'
-                    '  // Keep this comment\n'
-                    '  "install.flatpak": ' + json.dumps(old_entry) + '\n'
-                    '}}\n'
-                )
-                migrated = update(original, ENTRIES)
-                self.assertIn(json.dumps(ENTRIES["install.flatpak"], ensure_ascii=False), migrated)
-                self.assertEqual(update(migrated, ENTRIES), migrated)
-                cleaned = update(migrated, ENTRIES, cleanup=True)
-                self.assertIn("// Keep this comment", cleaned)
-                self.assertEqual(json.loads(cleaned.replace("// Keep this comment", "")), {
-                    "items": {"remove.flatpak": custom},
-                })
-                self.assertEqual(update(cleaned, ENTRIES, cleanup=True), cleaned)
+        original = (
+            '{"items": {\n'
+            '  // Keep this comment\n'
+            '  "remove.flatpak": ' + json.dumps(custom) + '\n'
+            '}}\n'
+        )
+        updated = update(original, ENTRIES)
+        self.assertIn(json.dumps(ENTRIES["install.flatpak"], ensure_ascii=False), updated)
+        self.assertEqual(update(updated, ENTRIES), updated)
+        cleaned = update(updated, ENTRIES, cleanup=True)
+        self.assertIn("// Keep this comment", cleaned)
+        self.assertEqual(json.loads(cleaned.replace("// Keep this comment", "")), {
+            "items": {"remove.flatpak": custom},
+        })
+        self.assertEqual(update(cleaned, ENTRIES, cleanup=True), cleaned)
 
     def test_cleanup_of_all_shipped_rows_handles_trailing_comma(self):
         original = json.dumps(ENTRIES)[:-1] + ",\n}"
@@ -168,8 +157,58 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(launcher.read_text(encoding="utf-8"), "user override")
 
 
+    def test_removed_fallback_stays_hidden_until_app_is_uninstalled(self):
+        reconcile = desktop["reconcile_exports"]
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            exports = root / "exports"
+            first = exports / "applications/org.example.Editor.desktop"
+            first.parent.mkdir(parents=True)
+            first.touch()
+            local = root / "local"
+            launcher = local / first.name
+            with patch.dict(reconcile.__globals__, APPLICATIONS=local, EXPORT_LINKS=root / "links"):
+                reconcile((exports,), set())
+                launcher.unlink()
+                second = first.with_name("org.example.Other.desktop")
+                second.touch()
+                reconcile((exports,), set())
+                self.assertFalse(launcher.is_symlink())
+                self.assertTrue((local / second.name).is_file())
+                first.unlink()
+                reconcile((exports,), set())
+                first.touch()
+                reconcile((exports,), set())
+                self.assertTrue(launcher.is_file())
+
+    def test_watcher_retries_a_failed_directory_scan(self):
+        watch = desktop["watch_exports"]
+        reconcile_calls = []
+        with patch.dict(watch.__globals__, installation_exports=lambda: (Path("/test"),),
+                        native_desktop_ids=lambda _: set(),
+                        reconcile_exports=lambda *args: reconcile_calls.append(args)), \
+                patch.dict(watch.__globals__, directory_stamp=unittest.mock.Mock(
+                    side_effect=[PermissionError("unreadable"), (1, 2, 3, 4)])), \
+                patch("time.monotonic", side_effect=[1, 2, 3]), \
+                patch("select.select", side_effect=[([], [], []), ([], [], []), ([sys.stdin], [], [])]), \
+                patch("sys.stdin", io.TextIOWrapper(io.BytesIO())), redirect_stderr(io.StringIO()):
+            watch()
+        self.assertEqual(reconcile_calls, [((Path("/test"),), set())])
+
+
+class LanguageTests(unittest.TestCase):
+    def test_next_picker_uses_omarchy_language_with_regional_fallback(self):
+        with TemporaryDirectory() as directory:
+            language = Path(directory) / "language"
+            with patch.dict(os.environ, OMARCHY_LANGUAGE_FILE=str(language)):
+                for code, expected in (("da-DK", "Søg i Flatpak"), ("en", "Search Flatpak")):
+                    language.write_text(code)
+                    fresh = runpy.run_path(str(PICKER))
+                    self.assertEqual(fresh["tr"]("searchInstall"), expected)
+
+
 class SetupTests(unittest.TestCase):
-    def test_installed_cli_consent_upgrade_retry_and_cleanup(self):
+    def test_installed_cli_consent_and_cleanup(self):
         with TemporaryDirectory() as directory:
             home = Path(directory)
             tools = home / "bin"
@@ -178,8 +217,9 @@ class SetupTests(unittest.TestCase):
             (tools / "omarchy").write_text(
                 '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/calls"\n'
                 'if [ "$1 $2" = "plugin list" ]; then '
-                'echo \'[{"id":"wfo.flatfind","enabled":true}]\'; fi\n'
+                'echo \'[{"id":"wfoyt.flatpak-companion","enabled":true}]\'; fi\n'
             )
+            (tools / "systemctl").write_text("#!/bin/sh\nexit 0\n")
             for tool in tools.iterdir():
                 tool.chmod(0o755)
             env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}",
@@ -192,9 +232,16 @@ class SetupTests(unittest.TestCase):
             cli = home / ".local/bin/flatpak-companion"
             helper = cli.resolve().parent / "omarchy/desktop.py"
             menu = home / ".config/omarchy/extensions/omarchy-menu.jsonc"
-            login = home / ".config/uwsm/env.d/60-flatfind-flatpak.sh"
+            login = home / ".config/uwsm/env.d/60-flatpak-companion.sh"
             marker = cli.resolve().parent / ".desktop-integration-enabled"
             self.assertIn("setup", run(cli, "--help").stdout)
+            service = home / ".config/systemd/user/flatpak-companion-cleanup.service"
+            generated_unit = service.read_bytes()
+            service.write_text("# Existing user unit\n")
+            result = run(sys.executable, helper, "--install-cli", check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(service.read_text(), "# Existing user unit\n")
+            service.write_bytes(generated_unit)
             cli.unlink()
             run(sys.executable, helper)  # Startup after a marketplace install.
             self.assertTrue(cli.is_symlink())
@@ -223,7 +270,16 @@ class SetupTests(unittest.TestCase):
                 self.assertTrue(login.resolve(strict=True).is_file())
                 self.assertTrue(marker.is_file())
             self.assertEqual((home / "calls").read_text().count("plugin disable"), 1)
-            run(sys.executable, helper, "--cleanup")
+            installed = cli.resolve().parent
+            saved_helper = home / "data/flatpak-companion/removal/desktop.py"
+            self.assertIn(str(saved_helper), service.read_text())
+            run(sys.executable, saved_helper, "--cleanup-removed", installed)
+            self.assertTrue(marker.is_file())
+            self.assertTrue(cli.is_symlink())
+            shutil.rmtree(installed)
+            run(sys.executable, saved_helper, "--cleanup-removed", installed)
+            self.assertFalse(saved_helper.exists())
+            self.assertFalse(service.exists())
             self.assertEqual(json.loads(menu.read_text()), {"remove.flatpak": custom})
             self.assertFalse(marker.exists())
             self.assertFalse(cli.is_symlink())

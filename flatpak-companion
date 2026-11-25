@@ -3,12 +3,14 @@
 import argparse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from functools import cache
 import gzip
 from io import BytesIO
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -35,6 +37,32 @@ APPSTREAM_CACHE_LIMIT = 32 * 1024 * 1024
 APPSTREAM_ENTRY_LIMIT = 20000
 XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 APPSTREAM_FIELD_LIMITS = {"name": 256, "summary": 2048, "bundle": 512}
+
+
+@cache
+def picker_strings():
+    """Read Omarchy's current language when the terminal picker opens."""
+    catalogs = Path(__file__).resolve().parent / "i18n"
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    language_file = Path(os.environ.get("OMARCHY_LANGUAGE_FILE") or config / "omarchy/language")
+    try:
+        with language_file.open(encoding="utf-8") as stream:
+            language = stream.readline(32).strip()
+    except (OSError, UnicodeError):
+        language = ""
+    if not re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z]{2})?", language):
+        language = "en"
+    strings = {}
+    for code in dict.fromkeys(("en", language.split("-", 1)[0], language)):
+        try:
+            strings.update(json.loads((catalogs / f"{code}.json").read_text(encoding="utf-8")))
+        except FileNotFoundError:
+            continue
+    return strings
+
+
+def tr(key, value=""):
+    return picker_strings()[key].replace("%1", str(value))
 
 
 class Remote(NamedTuple):
@@ -171,8 +199,7 @@ def flathub_metadata(refresh):
         warn(f"could not determine the Flathub catalog architecture: {exc}")
         return {}
 
-    # Reuse metadata downloaded by earlier versions.
-    cache_dir = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "flatfind"
+    cache_dir = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / COMMAND
     cache = cache_dir / f"flathub-{arch}.json"
     stale = {}
     try:
@@ -279,7 +306,7 @@ def catalog(scopes, refresh, include_runtimes):
         else:
             label = source.label
         if kind == "runtime":
-            name += " (runtime)"
+            name = tr("runtime", name)
         row = package_row(len(rows), ref, name, label, version, description)
         rows[row] = (targets, ref)
     return rows
@@ -330,30 +357,33 @@ def run_picker(options, lines):
 
 
 def pick_packages(rows, query, *, removing=False):
+    labels = [tr(key) for key in ("appId", "source", "branch", "architecture", "version")]
+    detail_format = r"%s" + "".join(rf"\n{label:<{max(map(len, labels))}} %s" for label in labels[:4]) + r"\n"
+    version_format = f"{labels[-1]} %s\\n"
     preview = (
-        r"printf '%s\nApp ID       %s\nSource       %s\nBranch       %s\nArchitecture %s\n' "
-        r"{1} {2} {3} {4} {5}; "
-        r"if [ -n {6} ]; then printf 'Version      %s\n' {6}; fi; "
+        f"printf {shlex.quote(detail_format)} {{1}} {{2}} {{3}} {{4}} {{5}}; "
+        f"if [ -n {{6}} ]; then printf {shlex.quote(version_format)} {{6}}; fi; "
         r"if [ -n {7} ]; then printf '%s\n' {7}; fi"
     )
     # fzf searches only visible fields when using --with-nth. Put the ID and
     # metadata past the right edge with a tab stop wider than a Linux TTY.
-    title, prompt, action = (f"{NAME} · Remove", "Search installed apps", "Review removal") if removing else (
-        NAME, "Search Flatpak", "Review install"
-    )
+    title = tr("removeTitle") if removing else NAME
+    prompt = tr("searchRemove" if removing else "searchInstall")
+    controls = tr("removeControls" if removing else "installControls")
+    selection_format = tr("removeSelection" if removing else "installSelection", "%s") + r"\n"
     selection_footer = (
         'if [ "$FZF_SELECT_COUNT" -gt 0 ]; then '
-        f"""printf 'Selected (%s) · Enter to {action.lower()}\\n' "$FZF_SELECT_COUNT"; """
+        f'printf {shlex.quote(selection_format)} "$FZF_SELECT_COUNT"; '
         r"printf '  %s\n' {+1}; fi"
     )
     options = [
         "--algo=v2", "--multi", "--layout=reverse",
         "--border=rounded", f"--border-label= {title} ", f"--prompt={prompt} > ",
-        f"--header=↑/↓ Move  ·  Tab Select  ·  Enter {action}  ·  Alt+P Details  ·  Esc Close",
+        f"--header={controls}",
         "--delimiter=\t", "--nth=1,2", "--tiebreak=begin,length",
         "--tabstop=65536", "--no-hscroll", "--ellipsis=",
         "--color=pointer:green,marker:green", f"--query={query}",
-        "--preview", preview, "--preview-window=down:45%:wrap", "--preview-label= Details ",
+        "--preview", preview, "--preview-window=down:45%:wrap", f"--preview-label= {tr('details')} ",
         "--footer-border=line",
         "--bind=alt-p:toggle-preview,alt-j:preview-down,alt-k:preview-up",
         f"--bind=multi:transform-footer({selection_footer})",
@@ -366,12 +396,12 @@ def choose_remote(name, targets):
     if len(targets) == 1:
         return targets[0]
 
-    labels = {"--user": "User (just you)", "--system": "System (all users) · Recommended"}
+    labels = {"--user": tr("userScope"), "--system": tr("systemScope")}
     ordered_targets = sorted(targets, key=lambda remote: remote.scope != "--system")
     choices = {labels[remote.scope]: remote for remote in ordered_targets}
     options = [
         "--no-input", "--no-info", "--layout=reverse", "--border=rounded",
-        "--border-label= Install scope ", f"--header=Install {name} for…",
+        f"--border-label= {tr('installScope')} ", f"--header={tr('installFor', name)}",
         "--color=pointer:green", "--bind=tab:down,shift-tab:up",
     ]
     selected = run_picker(options, choices)
@@ -380,14 +410,14 @@ def choose_remote(name, targets):
 
 def show_completion(status):
     # Flatpak also returns a nonzero status when the user declines the transaction.
-    message = f"Flatpak exited with status {status}." if status else "Done!"
+    message = tr("failed", status) if status else tr("done")
     try:
         with open("/dev/tty", "r+b", buffering=0) as terminal:
             fd = terminal.fileno()
             settings = termios.tcgetattr(fd)
             tty.setcbreak(fd)
             try:
-                terminal.write(f"\n{message} Press any key to exit.".encode())
+                terminal.write(f"\n{message}".encode())
                 terminal.read(1)
                 terminal.write(b"\n")
             finally:
@@ -400,7 +430,7 @@ def show_completion(status):
 def remove_apps(scope, query):
     rows = installed_apps(scope)
     if not rows:
-        print("No installed Flatpak apps found.")
+        print(tr("noInstalledApps"))
         return 0
 
     groups = defaultdict(list)

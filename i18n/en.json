@@ -1,0 +1,23 @@
+{
+  "removeTitle": "Flatpak Companion · Remove",
+  "searchInstall": "Search Flatpak",
+  "searchRemove": "Search installed apps",
+  "installControls": "↑/↓ Move  ·  Tab Select  ·  Enter Review install  ·  Alt+P Details  ·  Esc Close",
+  "removeControls": "↑/↓ Move  ·  Tab Select  ·  Enter Review removal  ·  Alt+P Details  ·  Esc Close",
+  "installSelection": "Selected (%1) · Enter to review install",
+  "removeSelection": "Selected (%1) · Enter to review removal",
+  "details": "Details",
+  "appId": "App ID",
+  "source": "Source",
+  "branch": "Branch",
+  "architecture": "Architecture",
+  "version": "Version",
+  "runtime": "%1 (runtime)",
+  "userScope": "User (just you)",
+  "systemScope": "System (all users) · Recommended",
+  "installScope": "Install scope",
+  "installFor": "Install %1 for…",
+  "noInstalledApps": "No installed Flatpak apps found.",
+  "done": "Done! Press any key to exit.",
+  "failed": "Flatpak exited with status %1. Press any key to exit."
+}

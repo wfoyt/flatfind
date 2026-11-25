@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "wfo.flatfind",
+  "id": "wfoyt.flatpak-companion",
   "name": "Flatpak Companion",
   "version": "1.0.0",
   "author": "wfoyt",

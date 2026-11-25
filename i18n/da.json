@@ -1,0 +1,23 @@
+{
+  "removeTitle": "Flatpak Companion · Fjern",
+  "searchInstall": "Søg i Flatpak",
+  "searchRemove": "Søg i installerede apps",
+  "installControls": "↑/↓ Flyt  ·  Tab Vælg  ·  Enter Gennemse installation  ·  Alt+P Detaljer  ·  Esc Luk",
+  "removeControls": "↑/↓ Flyt  ·  Tab Vælg  ·  Enter Gennemse fjernelse  ·  Alt+P Detaljer  ·  Esc Luk",
+  "installSelection": "Valgt (%1) · Enter for at gennemse installationen",
+  "removeSelection": "Valgt (%1) · Enter for at gennemse fjernelsen",
+  "details": "Detaljer",
+  "appId": "App-id",
+  "source": "Kilde",
+  "branch": "Gren",
+  "architecture": "Arkitektur",
+  "version": "Version",
+  "runtime": "%1 (kørselsmiljø)",
+  "userScope": "Bruger (kun dig)",
+  "systemScope": "System (alle brugere) · Anbefalet",
+  "installScope": "Installationsomfang",
+  "installFor": "Installér %1 for…",
+  "noInstalledApps": "Ingen installerede Flatpak-apps fundet.",
+  "done": "Færdig! Tryk på en vilkårlig tast for at afslutte.",
+  "failed": "Flatpak afsluttede med status %1. Tryk på en vilkårlig tast for at afslutte."
+}
