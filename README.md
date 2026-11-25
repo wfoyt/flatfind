@@ -50,7 +50,9 @@ Flatpak Companion searches your configured Flatpak remotes. Run `flatpak remotes
 
 After running `flatpak-companion setup` and confirming the changes, open the Omarchy menu and choose **Install → Flatpak** to search for applications. Choose **Remove → Flatpak** to browse installed apps. Both entries open the picker in a terminal.
 
-![Omarchy Install menu showing the Flatpak entry at the bottom.](assets/screenshots/omarchy-menu.png)
+<a href="assets/screenshots/omarchy-menu.png">
+  <img src="assets/screenshots/omarchy-menu.png" width="210" alt="Omarchy Install menu showing the Flatpak entry at the bottom.">
+</a>
 
 The enabled service watches Flatpak desktop exports, including changes made with the Flatpak CLI. It adds fallback launcher links when needed so applications can appear under **Apps**. Setup also links a UWSM environment script for future logins. Existing menu entries are preserved, including custom entries that use the same IDs.
 
