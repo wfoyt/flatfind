@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "wfo.flatfind",
-  "name": "Flatfind",
+  "name": "Flatpak Companion",
   "version": "1.0.0",
   "author": "wfoyt",
   "description": "Find and manage Flatpak apps and keep the Omarchy Apps menu up to date.",

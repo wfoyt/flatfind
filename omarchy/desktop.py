@@ -1,4 +1,4 @@
-"""Set up Flatfind's Omarchy menu entries and keep Flatpak desktop exports visible."""
+"""Set up Flatpak Companion's Omarchy menu entries and keep Flatpak desktop exports visible."""
 
 import argparse
 from collections import Counter
@@ -20,13 +20,15 @@ HOME = Path.home()
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
 DATA_HOME = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share")
 APPLICATIONS = DATA_HOME / "applications"
+# Keep launcher symlinks and the watcher lock at their existing paths.
 EXPORT_LINKS = DATA_HOME / "flatfind/desktop-exports"
+# Keep the existing UWSM drop-in and its symlink valid across updates.
 UWSM_SOURCE = REPO / "omarchy/uwsm/60-flatfind-flatpak.sh"
 UWSM_DEST = CONFIG_HOME / "uwsm/env.d" / UWSM_SOURCE.name
 MENU_FILE = HOME / ".config/omarchy/extensions/omarchy-menu.jsonc"
-PLUGIN_PICKER = "$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind"
+PLUGIN_PICKER = "$HOME/.config/omarchy/plugins/wfo.flatfind/flatpak-companion"
+PREVIOUS_PLUGIN_PICKER = "$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind"
 LEGACY_PICKER = "$HOME/.local/bin/flatfind"
-EXECUTABLE_GUARD = f'[[ -x "{PLUGIN_PICKER}" ]]'
 # Keep offsets in the original file and leave punctuation inside strings alone.
 JSON_STRING = r'"(?:\\.|[^"\\])*"'
 JSONC_COMMENTS = re.compile(JSON_STRING + r"|^[ \t]*//[^\r\n]*", re.M)
@@ -56,13 +58,23 @@ def object_members(text, opening):
 
 def previous_menu_entries(entry):
     action = entry["action"].rsplit(" && ", 1)[-1]
-    legacy = {name: value for name, value in entry.items() if name != "when"}
-    legacy["action"] = action.replace(PLUGIN_PICKER, LEGACY_PICKER)
-    return ({**entry, "when": EXECUTABLE_GUARD, "action": action}, legacy)
+    guarded = {
+        **entry,
+        "when": entry["when"].replace(PLUGIN_PICKER, PREVIOUS_PLUGIN_PICKER),
+        "action": entry["action"].replace(PLUGIN_PICKER, PREVIOUS_PLUGIN_PICKER),
+    }
+    executable_only = {
+        **entry,
+        "when": f'[[ -x "{PREVIOUS_PLUGIN_PICKER}" ]]',
+        "action": action.replace(PLUGIN_PICKER, PREVIOUS_PLUGIN_PICKER),
+    }
+    standalone = {name: value for name, value in entry.items() if name != "when"}
+    standalone["action"] = action.replace(PLUGIN_PICKER, LEGACY_PICKER)
+    return guarded, executable_only, standalone
 
 
 def menu_with_entries(original, entries, *, cleanup=False):
-    """Preserve custom rows and migrate the previously shipped Flatfind rows."""
+    """Preserve custom rows and migrate menu rows from earlier releases."""
     def mask(match):
         token = match[0]
         return token if token.startswith('"') else " " * len(token)
@@ -242,7 +254,7 @@ def reconcile_exports(exports, visible):
     # Quickshell watches this directory on Omarchy. A directory change also
     # rescans Flatpak export dirs that were missing when Quickshell started.
     APPLICATIONS.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile(dir=APPLICATIONS, prefix=".flatfind-refresh-"):
+    with NamedTemporaryFile(dir=APPLICATIONS, prefix=".flatpak-companion-refresh-"):
         pass
 
 
@@ -274,7 +286,7 @@ def watch_exports():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cleanup", action="store_true", help="remove Flatfind's menu entries, launcher links, and UWSM drop-in")
+    parser.add_argument("--cleanup", action="store_true", help="remove Flatpak Companion's menu entries, launcher links, and UWSM drop-in")
     args = parser.parse_args()
     EXPORT_LINKS.mkdir(parents=True, exist_ok=True)
     with (EXPORT_LINKS / ".lock").open("a") as lock:
@@ -284,7 +296,7 @@ def main():
             mode = fcntl.LOCK_EX | (fcntl.LOCK_NB if args.cleanup else 0)
             fcntl.flock(lock, mode)
         except BlockingIOError:
-            raise SystemExit("Disable the Flatfind plugin before cleaning up its launcher links.")
+            raise SystemExit("Disable the Flatpak Companion plugin before cleaning up its launcher links.")
         if args.cleanup:
             update_menu(cleanup=True)
             reconcile_exports((), set())

@@ -12,14 +12,14 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PICKER = ROOT / "flatfind"
+PICKER = ROOT / "flatpak-companion"
 picker = runpy.run_path(str(PICKER))
 desktop = runpy.run_path(str(ROOT / "omarchy/desktop.py"))
 ENTRIES = json.loads((ROOT / "omarchy-menu.jsonc").read_text(encoding="utf-8"))
-REF = "app/org.example.Flatfind/x86_64/stable"
+REF = "app/org.example.FlatpakCompanion/x86_64/stable"
 CATALOG = f"""<components><component>
     <name xml:lang="da">Dansk navn</name>
-    <name>Flatfind Test</name>
+    <name>Flatpak Companion Test</name>
     <summary>Test summary</summary>
     <bundle type="flatpak">{REF}</bundle>
     </component></components>"""
@@ -30,7 +30,7 @@ class CatalogTests(unittest.TestCase):
         download = picker["download_flathub_metadata"]
         response = subprocess.CompletedProcess([], 0, gzip.compress(CATALOG.encode()))
         with patch("subprocess.run", return_value=response) as run:
-            self.assertEqual(download("x86_64"), {REF: ("Flatfind Test", "Test summary")})
+            self.assertEqual(download("x86_64"), {REF: ("Flatpak Companion Test", "Test summary")})
         args = run.call_args.args[0]
         self.assertEqual(args[:2], ["curl", "-q"])
         self.assertEqual(args[-1], "https://dl.flathub.org/repo/appstream/x86_64/appstream.xml.gz")
@@ -77,7 +77,7 @@ class CatalogTests(unittest.TestCase):
                 redirect_stderr(stderr), self.assertRaises(SystemExit) as exit_error:
             runpy.run_path(str(PICKER), run_name="__main__")
         self.assertEqual(exit_error.exception.code, 1)
-        self.assertEqual(stderr.getvalue(), "flatfind: Flatpak list timed out after 30 seconds\n")
+        self.assertEqual(stderr.getvalue(), "flatpak-companion: Flatpak list timed out after 30 seconds\n")
 
 
 class MenuTests(unittest.TestCase):
@@ -89,7 +89,11 @@ class MenuTests(unittest.TestCase):
                   "action": action.replace(executable, "$HOME/.local/bin/flatfind")}
         previous = {**legacy, "action": action, "when": f'[[ -x "{executable}" ]]'}
         custom = {**ENTRIES["remove.flatpak"], "label": "My Flatpak menu"}
-        for old_entry in (previous, legacy):
+        guarded = {
+            name: value.replace("wfo.flatfind/flatpak-companion", "wfo.flatfind/flatfind")
+            for name, value in ENTRIES["install.flatpak"].items()
+        }
+        for old_entry in (guarded, previous, legacy):
             with self.subTest(old_entry=old_entry):
                 original = (
                     '{"items": {\n'

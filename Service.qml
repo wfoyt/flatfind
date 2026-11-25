@@ -13,7 +13,7 @@ Item {
         running: root.sourceDir !== ""
         stdinEnabled: true
         stderr: SplitParser {
-            onRead: line => console.warn("Flatfind: " + line)
+            onRead: line => console.warn("Flatpak Companion: " + line)
         }
     }
 }

@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+
+import argparse
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+import gzip
+from io import BytesIO
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
+import termios
+import time
+import tty
+from typing import NamedTuple
+import xml.etree.ElementTree as ET
+import zlib
+
+
+NAME = "Flatpak Companion"
+COMMAND = "flatpak-companion"
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+FLATHUB_REPO = "https://dl.flathub.org/repo"
+FLATHUB_URLS = (FLATHUB_REPO, "https://flathub.org/repo")
+APPSTREAM_MAX_AGE = 24 * 60 * 60
+APPSTREAM_TRANSFER_TIMEOUT = 10
+APPSTREAM_TIMEOUT = 20
+APPSTREAM_DOWNLOAD_LIMIT = 32 * 1024 * 1024
+APPSTREAM_XML_LIMIT = 128 * 1024 * 1024
+APPSTREAM_CACHE_LIMIT = 32 * 1024 * 1024
+APPSTREAM_ENTRY_LIMIT = 20000
+XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
+APPSTREAM_FIELD_LIMITS = {"name": 256, "summary": 2048, "bundle": 512}
+
+
+class Remote(NamedTuple):
+    scope: str
+    name: str
+    is_flathub: bool
+
+    @property
+    def scope_label(self):
+        return self.scope[2:].replace("=", " ", 1)
+
+    @property
+    def label(self):
+        return f"{self.name} ({self.scope_label})"
+
+
+class Package(NamedTuple):
+    ref: str
+    name: str
+    version: str
+    description: str
+
+
+def package_row(index, ref, name, source, version, description):
+    _, package_id, arch, branch = ref.split("/")
+    fields = (name or package_id, package_id, source, branch, arch, version, description, str(index))
+    return "\t".join(CONTROL_CHARACTERS.sub(" ", field).strip() for field in fields)
+
+
+def warn(message):
+    print(f"{COMMAND}: {message}", file=sys.stderr)
+
+
+def flatpak_output(*args):
+    command = ["flatpak", *args]
+    result = subprocess.run(
+        command, capture_output=True, encoding="utf-8", errors="replace", timeout=30
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or f"Flatpak exited with {result.returncode}")
+    return result.stdout
+
+
+class AppstreamMetadata:
+    """Collect only the fields Flatpak Companion displays, without building an XML tree."""
+
+    def __init__(self):
+        self.depth = 0
+        self.component = False
+        self.field = None
+        self.text = None
+        self.name = self.summary = None
+        self.refs = set()
+        self.metadata = {}
+
+    def start(self, tag, attributes):
+        self.depth += 1
+        if self.depth > 64:
+            raise ValueError("Flathub AppStream data is nested too deeply")
+        if self.depth == 2:
+            self.component = tag == "component"
+        elif self.depth == 3 and self.component and tag in APPSTREAM_FIELD_LIMITS:
+            if (tag == "bundle" and attributes.get("type") == "flatpak"
+                    or tag != "bundle" and XML_LANG not in attributes):
+                self.field = tag
+                self.text = ""
+
+    def data(self, text):
+        if self.depth == 3 and self.field and self.text is not None:
+            if len(self.text) + len(text) <= APPSTREAM_FIELD_LIMITS[self.field]:
+                self.text += text
+            else:
+                self.text = None
+
+    def end(self, tag):
+        if self.depth == 3:
+            if self.field == "bundle" and self.text and self.text.startswith("app/"):
+                self.refs.add(self.text)
+                if len(self.refs) > APPSTREAM_ENTRY_LIMIT:
+                    raise ValueError("Flathub AppStream component has too many refs")
+            elif self.field == "name" and self.name is None:
+                self.name = self.text or ""
+            elif self.field == "summary" and self.summary is None:
+                self.summary = self.text or ""
+            self.field = self.text = None
+        elif self.depth == 2 and self.component:
+            if self.name:
+                self.metadata.update((ref, (self.name, self.summary or "")) for ref in self.refs)
+                if len(self.metadata) > APPSTREAM_ENTRY_LIMIT:
+                    raise ValueError("Flathub AppStream data exceeds the app count limit")
+            self.name = self.summary = None
+            self.refs.clear()
+            self.component = False
+        self.depth -= 1
+
+    def doctype(self, name, public_id, system_id):
+        raise ValueError("Flathub AppStream data must not contain a document type")
+
+    def close(self):
+        return self.metadata
+
+
+def download_flathub_metadata(arch):
+    deadline = time.monotonic() + APPSTREAM_TIMEOUT
+    url = f"{FLATHUB_REPO}/appstream/{arch}/appstream.xml.gz"
+    # Ignore curlrc so it cannot change the fixed source or transfer limits.
+    response = subprocess.run(
+        ["curl", "-q", "--fail", "--silent", "--show-error", "--proto", "=https",
+         "--max-time", str(APPSTREAM_TRANSFER_TIMEOUT), "--max-filesize", str(APPSTREAM_DOWNLOAD_LIMIT), url],
+        capture_output=True, timeout=APPSTREAM_TRANSFER_TIMEOUT + 2, check=True,
+    )
+    remaining = APPSTREAM_XML_LIMIT
+    parser = ET.XMLParser(target=AppstreamMetadata())
+    with gzip.GzipFile(fileobj=BytesIO(response.stdout)) as stream:
+        while chunk := stream.read(min(64 * 1024, remaining + 1)):
+            if len(chunk) > remaining:
+                raise ValueError("Flathub AppStream data exceeds the decoded size limit")
+            if time.monotonic() >= deadline:
+                raise ValueError("Flathub AppStream processing timed out")
+            remaining -= len(chunk)
+            parser.feed(chunk)
+        metadata = parser.close()
+    if not metadata:
+        raise ValueError("empty Flathub AppStream catalog")
+    return metadata
+
+
+def flathub_metadata(refresh):
+    try:
+        arch = flatpak_output("--default-arch").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_]+", arch):
+            raise ValueError("invalid default Flatpak architecture")
+    except (RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        warn(f"could not determine the Flathub catalog architecture: {exc}")
+        return {}
+
+    # Reuse metadata downloaded by earlier versions.
+    cache_dir = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "flatfind"
+    cache = cache_dir / f"flathub-{arch}.json"
+    stale = {}
+    try:
+        with cache.open("rb") as stream:
+            modified = os.fstat(stream.fileno()).st_mtime
+            data = stream.read(APPSTREAM_CACHE_LIMIT + 1)
+            if len(data) <= APPSTREAM_CACHE_LIMIT:
+                stale = json.loads(data)
+        if not isinstance(stale, dict):
+            stale = {}
+        if stale and not refresh and time.time() - modified < APPSTREAM_MAX_AGE:
+            return stale
+    except (OSError, ValueError, RecursionError):
+        pass
+
+    try:
+        metadata = download_flathub_metadata(arch)
+    except (OSError, EOFError, subprocess.SubprocessError, ET.ParseError, ValueError, zlib.error) as exc:
+        if refresh or not stale:
+            warn(f"could not refresh Flathub display names: {exc}")
+        return stale
+
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=cache_dir) as directory:
+            staged = Path(directory) / cache.name
+            staged.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+            if staged.stat().st_size <= APPSTREAM_CACHE_LIMIT:
+                staged.replace(cache)
+    except OSError as exc:
+        warn(f"could not cache Flathub display names: {exc}")
+    return metadata
+
+
+def list_packages(remote, refresh, include_runtimes):
+    args = ["remote-ls", remote.scope, "--app", "--columns=ref,name,version,description"]
+    if include_runtimes:
+        args.append("--runtime")
+    cache_flag = [] if refresh else ["--cached"]
+    try:
+        output = flatpak_output(*args, *cache_flag, "--", remote.name)
+    except RuntimeError:
+        if refresh:
+            raise
+        output = flatpak_output(*args, "--", remote.name)
+
+    packages = []
+    for line in output.split("\n"):
+        columns = line.split("\t", 3)
+        # Flatpak omits empty trailing columns in tab-separated output.
+        columns.extend([""] * (4 - len(columns)))
+        ref, name, version, description = columns
+        parts = ref.split("/")
+        if len(parts) != 4 or parts[0] not in ("app", "runtime") or not all(parts):
+            continue
+        packages.append(Package(ref, name, version, description))
+    return packages
+
+
+def catalog(scopes, refresh, include_runtimes):
+    remotes = []
+    for scope in scopes:
+        try:
+            output = flatpak_output("remotes", scope, "--columns=name,url")
+        except (RuntimeError, subprocess.TimeoutExpired) as exc:
+            warn(f"could not list {scope[2:]} remotes: {exc}")
+            continue
+        for line in output.splitlines():
+            name, _, url = line.partition("\t")
+            if name:
+                remotes.append(Remote(scope, name, url.rstrip("/") in FLATHUB_URLS))
+
+    packages = defaultdict(dict)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        metadata_job = None
+        if any(remote.is_flathub for remote in remotes):
+            metadata_job = pool.submit(flathub_metadata, refresh)
+        jobs = [pool.submit(list_packages, remote, refresh, include_runtimes) for remote in remotes]
+        for remote, job in zip(remotes, jobs):
+            try:
+                for package in job.result():
+                    source = None if remote.is_flathub else remote
+                    packages[source, package.ref].setdefault(remote.scope, (remote, package))
+            except (RuntimeError, subprocess.TimeoutExpired) as exc:
+                warn(f"could not read {remote.label}: {exc}")
+        metadata = metadata_job.result() if metadata_job else {}
+
+    rows = {}
+    for (source, ref), by_scope in packages.items():
+        options = tuple(by_scope.values())
+        targets = tuple(remote for remote, _ in options)
+        kind, package_id, _, _ = ref.split("/")
+        name = next((pkg.name for _, pkg in options if pkg.name), package_id)
+        version = next((pkg.version for _, pkg in options if pkg.version), "")
+        description = next((pkg.description for _, pkg in options if pkg.description), "")
+        if source is None:
+            appstream = metadata.get(ref)
+            if (isinstance(appstream, (list, tuple)) and len(appstream) == 2
+                    and all(isinstance(field, str) for field in appstream)):
+                name, summary = appstream
+                description = summary or description
+            scope_labels = " and ".join(remote.scope_label for remote in targets)
+            label = f"Flathub ({scope_labels})"
+        else:
+            label = source.label
+        if kind == "runtime":
+            name += " (runtime)"
+        row = package_row(len(rows), ref, name, label, version, description)
+        rows[row] = (targets, ref)
+    return rows
+
+
+def installed_apps(scope):
+    flags = [scope] if scope else []
+    output = flatpak_output("list", "--app", *flags, "--columns=ref,name,version,description,origin,installation")
+    rows = {}
+    for line in output.split("\n"):
+        columns = line.split("\t", 5)
+        columns.extend([""] * (6 - len(columns)))
+        ref, name, version, description, origin, installation = columns
+        # `flatpak list` prints app refs without the leading `app/`.
+        parts = ref.split("/")
+        if len(parts) != 3 or not all(parts):
+            continue
+        ref = f"app/{ref}"
+        if installation in ("user", "system"):
+            target = f"--{installation}"
+        else:
+            match = re.fullmatch(r"system \((.+)\)", installation)
+            if not match:
+                raise RuntimeError(f"could not identify the installation for {ref}")
+            target = f"--installation={match[1]}"
+        if scope and target != scope:
+            continue
+        label = f"{origin} ({installation})" if origin else installation
+        row = package_row(len(rows), ref, name, label, version, description)
+        rows[row] = (target, ref)
+    return rows
+
+
+def run_picker(options, lines):
+    # Shell-wide fzf defaults can change the picker output or bypass its prompt.
+    env = os.environ.copy()
+    env.pop("FZF_DEFAULT_OPTS", None)
+    env.pop("FZF_DEFAULT_OPTS_FILE", None)
+    result = subprocess.run(
+        ["fzf", *options], input="\n".join(lines) + "\n",
+        stdout=subprocess.PIPE, encoding="utf-8", env=env,
+    )
+    if result.returncode in (1, 130):
+        return []
+    if result.returncode:
+        raise RuntimeError(f"fzf exited with {result.returncode}")
+    return result.stdout.splitlines()
+
+
+def pick_packages(rows, query, *, removing=False):
+    preview = (
+        r"printf '%s\nApp ID       %s\nSource       %s\nBranch       %s\nArchitecture %s\n' "
+        r"{1} {2} {3} {4} {5}; "
+        r"if [ -n {6} ]; then printf 'Version      %s\n' {6}; fi; "
+        r"if [ -n {7} ]; then printf '%s\n' {7}; fi"
+    )
+    # fzf searches only visible fields when using --with-nth. Put the ID and
+    # metadata past the right edge with a tab stop wider than a Linux TTY.
+    title, prompt, action = (f"{NAME} · Remove", "Search installed apps", "Remove") if removing else (
+        NAME, "Search Flatpak", "Review install"
+    )
+    selection_footer = (
+        'if [ "$FZF_SELECT_COUNT" -gt 0 ]; then '
+        f"""printf 'Selected (%s) · Enter to {action.lower()}\\n' "$FZF_SELECT_COUNT"; """
+        r"printf '  %s\n' {+1}; fi"
+    )
+    options = [
+        "--algo=v2", "--multi", "--layout=reverse",
+        "--border=rounded", f"--border-label= {title} ", f"--prompt={prompt} > ",
+        f"--header=↑/↓ Move  ·  Tab Select  ·  Enter {action}  ·  Alt+P Details  ·  Esc Close",
+        "--delimiter=\t", "--nth=1,2", "--tiebreak=begin,length",
+        "--tabstop=65536", "--no-hscroll", "--ellipsis=",
+        "--color=pointer:green,marker:green", f"--query={query}",
+        "--preview", preview, "--preview-window=down:45%:wrap", "--preview-label= Details ",
+        "--footer-border=line",
+        "--bind=alt-p:toggle-preview,alt-j:preview-down,alt-k:preview-up",
+        f"--bind=multi:transform-footer({selection_footer})",
+        "--with-shell=/bin/sh -c",
+    ]
+    return run_picker(options, sorted(rows, key=str.casefold))
+
+
+def choose_remote(name, targets):
+    if len(targets) == 1:
+        return targets[0]
+
+    labels = {"--user": "User (just you)", "--system": "System (all users) · Recommended"}
+    ordered_targets = sorted(targets, key=lambda remote: remote.scope != "--system")
+    choices = {labels[remote.scope]: remote for remote in ordered_targets}
+    options = [
+        "--no-input", "--no-info", "--layout=reverse", "--border=rounded",
+        "--border-label= Install scope ", f"--header=Install {name} for…",
+        "--color=pointer:green", "--bind=tab:down,shift-tab:up",
+    ]
+    selected = run_picker(options, choices)
+    return choices[selected[0]] if selected else None
+
+
+def show_completion(status):
+    # Flatpak also returns a nonzero status when the user declines the transaction.
+    message = f"Flatpak exited with status {status}." if status else "Done!"
+    try:
+        with open("/dev/tty", "r+b", buffering=0) as terminal:
+            fd = terminal.fileno()
+            settings = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+            try:
+                terminal.write(f"\n{message} Press any key to exit.".encode())
+                terminal.read(1)
+                terminal.write(b"\n")
+            finally:
+                termios.tcsetattr(fd, termios.TCSAFLUSH, settings)
+    except (OSError, termios.error):
+        # A missing or closed terminal must not override the Flatpak status.
+        pass
+
+
+def remove_apps(scope, query):
+    rows = installed_apps(scope)
+    if not rows:
+        print("No installed Flatpak apps found.")
+        return 0
+
+    groups = defaultdict(list)
+    for row in pick_packages(rows, query, removing=True):
+        target, ref = rows[row]
+        groups[target].append(ref)
+    status = 0
+    if groups:
+        with open("/dev/tty") as terminal:
+            for target, refs in groups.items():
+                status = subprocess.call(["flatpak", "uninstall", "--assumeyes", target, "--", *refs], stdin=terminal)
+                if status:
+                    break
+        show_completion(status)
+    return status
+
+
+def main():
+    argv = sys.argv[1:]
+    removing = argv[:1] == ["remove"]
+    if removing:
+        parser = argparse.ArgumentParser(prog=f"{COMMAND} remove", description="Find and remove installed Flatpak apps.")
+        argv = argv[1:]
+    else:
+        parser = argparse.ArgumentParser(
+            prog=COMMAND,
+            description="Find and install Flatpak packages from the terminal.",
+            epilog=f"Use '{COMMAND} remove' to browse and uninstall installed apps.",
+        )
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--user", action="store_const", dest="scope", const="--user",
+                       help="search the user installation only")
+    scope.add_argument("--system", action="store_const", dest="scope", const="--system",
+                       help="search the default system installation only")
+    scope.add_argument("--installation", metavar="NAME", help="search a named system installation")
+    if not removing:
+        parser.add_argument("--refresh", action="store_true", help="ask Flatpak to refresh remote catalogs")
+        parser.add_argument("--runtimes", action="store_true", help="include Flatpak runtimes alongside apps")
+    parser.add_argument("query", nargs="*", help="start the picker with this search")
+    args = parser.parse_args(argv)
+
+    for tool in ("flatpak", "fzf"):
+        if shutil.which(tool) is None:
+            parser.exit(1, f"{COMMAND}: {tool} is required and was not found on PATH\n")
+
+    target = args.scope if args.installation is None else f"--installation={args.installation}"
+    query = " ".join(args.query)
+    if removing:
+        return remove_apps(target, query)
+
+    if args.refresh:
+        print("Refreshing Flatpak catalogs…", file=sys.stderr)
+    rows = catalog((target,) if target else ("--user", "--system"), args.refresh, args.runtimes)
+    if not rows:
+        warn(f"no packages found. Check 'flatpak remotes' or try '{COMMAND} --refresh'.")
+        return 1
+
+    groups = defaultdict(list)
+    for row in pick_packages(rows, query):
+        targets, ref = rows[row]
+        remote = choose_remote(row.split("\t", 1)[0], targets)
+        if remote is None:
+            return 0
+        groups[remote].append(ref)
+    status = 0
+    if groups:
+        # Flatpak shows permissions and the source for the resolved transaction
+        # before asking for approval. Keep the terminal available for its prompt.
+        with open("/dev/tty") as terminal:
+            for remote, refs in groups.items():
+                status = subprocess.call(
+                    ["flatpak", "install", remote.scope, "--", remote.name, *refs], stdin=terminal
+                )
+                if status:
+                    break
+        show_completion(status)
+    return status
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except subprocess.TimeoutExpired as exc:
+        warn(f"Flatpak {exc.cmd[1]} timed out after {exc.timeout} seconds")
+        sys.exit(1)
+    except (OSError, RuntimeError) as exc:
+        warn(exc)
+        sys.exit(1)
