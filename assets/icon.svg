@@ -1,4 +1,39 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#e11d48"/>
-  <text x="32" y="32" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="32" font-weight="600" fill="#ffffff">F</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#293759"/>
+      <stop offset="1" stop-color="#141a30"/>
+    </linearGradient>
+    <linearGradient id="lid" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#b6d8ff"/>
+      <stop offset="1" stop-color="#879eff"/>
+    </linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#6c8afa"/>
+      <stop offset="1" stop-color="#4a54c8"/>
+    </linearGradient>
+    <linearGradient id="side" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#4d61d7"/>
+      <stop offset="1" stop-color="#343995"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="2" y="2" width="124" height="124" rx="28" fill="url(#tile)"
+        stroke="#485780" stroke-width="2"/>
+  <path d="M12 30A18 18 0 0 1 30 12h29" fill="none" stroke="#a4b7ed"
+        stroke-linecap="round" stroke-width="2" opacity=".22"/>
+
+  <path d="m28 85 33-17 39 19v9l-37 20-35-18z" fill="#0b1125" opacity=".55"/>
+  <g stroke-linejoin="round" stroke-width="2">
+    <path d="M26 50 63 69v39L26 89Z" fill="url(#front)" stroke="#829dff"/>
+    <path d="m63 69 37-19v39l-37 19z" fill="url(#side)" stroke="#7284ea"/>
+    <path d="m26 50 37-19 37 19-37 19z" fill="url(#lid)" stroke="#c5daff"/>
+  </g>
+  <path d="m49 38 37 19-10 5-37-19z" fill="#eff6ff" opacity=".74"/>
+  <path d="m76 62 10-5v13l-10 5z" fill="#adc2ff" opacity=".9"/>
+  <path d="m37 76 15 8m-15-2 9 5" fill="none" stroke="#d5e1ff"
+        stroke-linecap="round" stroke-width="2.5"/>
+
+  <path d="M96 14c3 12 7 16 19 19-12 3-16 7-19 19-3-12-7-16-19-19 12-3 16-7 19-19Z"
+        fill="#9cf6d6" stroke="#253353" stroke-width="3" stroke-linejoin="round"/>
 </svg>
