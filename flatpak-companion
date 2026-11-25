@@ -420,6 +420,11 @@ def remove_apps(scope, query):
 
 def main():
     argv = sys.argv[1:]
+    if argv[:1] == ["setup"]:
+        parser = argparse.ArgumentParser(prog=f"{COMMAND} setup", description="Configure Omarchy desktop integration.")
+        parser.parse_args(argv[1:])
+        helper = Path(__file__).resolve().parent / "omarchy/desktop.py"
+        return subprocess.call([sys.executable, str(helper), "--setup"])
     removing = argv[:1] == ["remove"]
     if removing:
         parser = argparse.ArgumentParser(prog=f"{COMMAND} remove", description="Find and remove installed Flatpak apps.")
@@ -428,7 +433,7 @@ def main():
         parser = argparse.ArgumentParser(
             prog=COMMAND,
             description="Find and install Flatpak packages from the terminal.",
-            epilog=f"Use '{COMMAND} remove' to browse and uninstall installed apps.",
+            epilog=f"Use '{COMMAND} remove' to browse installed apps or '{COMMAND} setup' for Omarchy integration.",
         )
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--user", action="store_const", dest="scope", const="--user",

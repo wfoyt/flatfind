@@ -19,6 +19,10 @@ REPO = Path(__file__).resolve().parents[1]
 HOME = Path.home()
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
 DATA_HOME = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share")
+CLI = HOME / ".local/bin/flatpak-companion"
+INSTALLED = HOME / ".config/omarchy/plugins/wfo.flatfind"
+# Keep consent with this installation so removing the plugin also revokes it.
+CONSENT = INSTALLED / ".desktop-integration-enabled"
 APPLICATIONS = DATA_HOME / "applications"
 # Keep launcher symlinks and the watcher lock at their existing paths.
 EXPORT_LINKS = DATA_HOME / "flatfind/desktop-exports"
@@ -132,7 +136,6 @@ def menu_with_entries(original, entries, *, cleanup=False):
 def update_menu(*, cleanup=False):
     entries = json.loads((REPO / "omarchy-menu.jsonc").read_text(encoding="utf-8"))
     menu_path = MENU_FILE.resolve()
-    menu_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         original = menu_path.read_bytes()
         mode = stat.S_IMODE(menu_path.stat().st_mode)
@@ -141,6 +144,7 @@ def update_menu(*, cleanup=False):
     updated = menu_with_entries(original.decode(), entries, cleanup=cleanup).encode()
     if updated == original:
         return
+    menu_path.parent.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(dir=menu_path.parent, delete=False) as staged:
         staged_path = Path(staged.name)
         try:
@@ -284,10 +288,72 @@ def watch_exports():
             return
 
 
+def install_cli():
+    target = REPO / "flatpak-companion"
+    link_if_absent(CLI, target)
+    if not links_to(CLI, target):
+        raise ValueError(f"A different command exists at {CLI}. Use {target} directly.")
+
+
+def setup():
+    if INSTALLED.resolve() != REPO:
+        raise ValueError("Run the installed flatpak-companion setup command after installing the CLI.")
+    print(f"Add Flatpak rows to {MENU_FILE}, link {UWSM_DEST} for future logins, "
+          f"and enable wfo.flatfind to maintain launcher links in {APPLICATIONS}.")
+    try:
+        answer = input("Set up Omarchy integration? [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        print("Setup cancelled.")
+        return
+    if os.path.lexists(UWSM_DEST) and not links_to(UWSM_DEST, UWSM_SOURCE):
+        raise ValueError(f"An existing file at {UWSM_DEST} prevents setup.")
+    subprocess.run(["omarchy-shell", "shell", "rescanPlugins"], check=True, timeout=5)
+    for _ in range(40):
+        result = subprocess.run(["omarchy", "plugin", "list", "--json"], check=True,
+                                capture_output=True, text=True, timeout=5)
+        plugin = next((p for p in json.loads(result.stdout) if p.get("id") == "wfo.flatfind"), None)
+        if plugin is not None:
+            break
+        time.sleep(0.05)
+    else:
+        raise ValueError("Omarchy has not discovered Flatpak Companion. Retry setup in your Omarchy session.")
+    update_menu()
+    link_if_absent(UWSM_DEST, UWSM_SOURCE)
+    if not links_to(UWSM_DEST, UWSM_SOURCE):
+        raise ValueError(f"Could not install the login link at {UWSM_DEST}.")
+    # On first setup an already enabled service has finished its CLI-only startup.
+    if not CONSENT.is_file():
+        if plugin.get("enabled"):
+            subprocess.run(["omarchy", "plugin", "disable", "wfo.flatfind"], check=True, timeout=10)
+        with CONSENT.open("x"):
+            pass
+    subprocess.run(["omarchy", "plugin", "enable", "wfo.flatfind"], check=True, timeout=10)
+    print("Flatpak Companion desktop integration is enabled.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cleanup", action="store_true", help="remove Flatpak Companion's menu entries, launcher links, and UWSM drop-in")
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--install-cli", action="store_true")
+    actions.add_argument("--setup", action="store_true")
+    actions.add_argument("--cleanup", action="store_true", help="remove Flatpak Companion's menu entries, launcher links, and UWSM drop-in")
     args = parser.parse_args()
+    if args.setup:
+        setup()
+        return
+    if args.install_cli:
+        install_cli()
+        print(f"Installed {CLI}. Run flatpak-companion setup for Omarchy integration.")
+        return
+    if not args.cleanup:
+        try:
+            install_cli()
+        except (OSError, ValueError) as error:
+            log(error)
+        if not CONSENT.is_file():
+            return
     EXPORT_LINKS.mkdir(parents=True, exist_ok=True)
     with (EXPORT_LINKS / ".lock").open("a") as lock:
         try:
@@ -298,24 +364,20 @@ def main():
         except BlockingIOError:
             raise SystemExit("Disable the Flatpak Companion plugin before cleaning up its launcher links.")
         if args.cleanup:
+            CONSENT.unlink(missing_ok=True)
             update_menu(cleanup=True)
-            reconcile_exports((), set())
+            if any(EXPORT_LINKS.glob("*.desktop")):
+                reconcile_exports((), set())
             if links_to(UWSM_DEST, UWSM_SOURCE):
                 UWSM_DEST.unlink(missing_ok=True)
+            if links_to(CLI, REPO / "flatpak-companion"):
+                CLI.unlink()
             return
-        try:
-            link_if_absent(UWSM_DEST, UWSM_SOURCE)
-        except OSError as error:
-            log(f"could not install the UWSM drop-in: {error}")
-        try:
-            update_menu()
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
-            log(f"could not add the Omarchy menu entries: {error}")
         watch_exports()
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from error

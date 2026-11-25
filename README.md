@@ -9,28 +9,34 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick start</a> ·
+  <a href="#quick-setup">Quick setup</a> ·
   <a href="#demo">Demo</a> ·
   <a href="#picker-controls">Picker controls</a> ·
   <a href="#terminal-usage">Terminal usage</a>
 </p>
 
-## Quick start
+## Quick Setup
 
-Flatpak Companion requires **Omarchy 4.5+**, **Flatpak**, **Python 3**, and **fzf 0.64+**. Install any missing dependencies, then add and enable the plugin from your Omarchy session.
+Install **Flatpak**, **Python 3**, and **fzf 0.64+** on Omarchy 4.5+, then install the CLI. Omarchy fetches the plugin and its service creates the command in `~/.local/bin`.
 
 ```sh
 omarchy pkg add flatpak python fzf
 omarchy plugin add https://github.com/wfoyt/flatpak-companion.git --enable
 ```
 
+Run `flatpak-companion` to find apps, or `flatpak-companion remove` to browse installed apps. If your shell cannot find the command, use `~/.local/bin/flatpak-companion`. From a local checkout, `./install` also installs the CLI.
+
+To add **Install → Flatpak** and **Remove → Flatpak** to the Omarchy menu, run:
+
+```sh
+flatpak-companion setup
+```
+
+Setup shows the menu file and login script link, explains launcher syncing, and asks for confirmation (default **No**). After confirmation it merges the menu rows, preserves custom rows, and enables a watcher that keeps Flatpak apps visible in the Apps menu. The UWSM link makes Flatpak exports visible at future logins. Disabling the plugin stops the watcher.
+
 Flatpak Companion searches your configured Flatpak remotes. Run `flatpak remotes` to check which sources are available. When Flathub is configured, opening the install picker also uses curl to fetch display names and descriptions from `dl.flathub.org`. It caches them for 24 hours under `$XDG_CACHE_HOME/flatfind` (by default `~/.cache/flatfind`).
 
-While enabled, the service adds the Install and Remove menu entries and watches local Flatpak desktop exports. It creates fallback launcher links for apps the session cannot see and links the Flatpak environment script into UWSM for future logins. Disabling stops the watcher. Use the uninstall steps below to remove the integrations.
-
-If you already have a local checkout, run `./install` from the project directory to install that copy.
-
-If you installed the plugin from Git before the rename, run `omarchy plugin update wfo.flatfind`. Flatpak Companion keeps the same Omarchy plugin ID so your enabled state carries over.
+For an existing Git installation, run `omarchy plugin update wfo.flatfind` and then run setup once to opt in to launcher syncing. Existing menu entries and login links are preserved. To use only the CLI after upgrading, disable the plugin, run the cleanup command in **Uninstall the plugin**, then run `~/.config/omarchy/plugins/wfo.flatfind/install` to restore the CLI link.
 
 ## Demo
 
@@ -82,7 +88,7 @@ Use `--user`, `--system`, or `--installation NAME` to limit either picker to a s
 
 ## Uninstall the plugin
 
-Disable Flatpak Companion, clean up its menu entries, launcher links, and login integration, then remove the plugin.
+Disable Flatpak Companion, clean up its CLI link, menu entries, launcher links, and login integration, then remove the plugin.
 
 ```sh
 omarchy plugin disable wfo.flatfind &&

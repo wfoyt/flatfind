@@ -1,6 +1,7 @@
 from contextlib import redirect_stderr
 import gzip
 import io
+import os
 import json
 from pathlib import Path
 import runpy
@@ -165,3 +166,65 @@ class LauncherTests(unittest.TestCase):
                 launcher.write_text("user override", encoding="utf-8")
                 reconcile((exports,), scan(roots))
                 self.assertEqual(launcher.read_text(encoding="utf-8"), "user override")
+
+
+class SetupTests(unittest.TestCase):
+    def test_installed_cli_consent_upgrade_retry_and_cleanup(self):
+        with TemporaryDirectory() as directory:
+            home = Path(directory)
+            tools = home / "bin"
+            tools.mkdir()
+            (tools / "omarchy-shell").write_text("#!/bin/sh\nexit 0\n")
+            (tools / "omarchy").write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/calls"\n'
+                'if [ "$1 $2" = "plugin list" ]; then '
+                'echo \'[{"id":"wfo.flatfind","enabled":true}]\'; fi\n'
+            )
+            for tool in tools.iterdir():
+                tool.chmod(0o755)
+            env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}",
+                   "XDG_CONFIG_HOME": str(home / ".config"), "XDG_DATA_HOME": str(home / "data")}
+
+            def run(*args, answer="", check=True):
+                return subprocess.run(args, input=answer, capture_output=True, text=True, env=env, check=check)
+
+            run(ROOT / "install")
+            cli = home / ".local/bin/flatpak-companion"
+            helper = cli.resolve().parent / "omarchy/desktop.py"
+            menu = home / ".config/omarchy/extensions/omarchy-menu.jsonc"
+            login = home / ".config/uwsm/env.d/60-flatfind-flatpak.sh"
+            marker = cli.resolve().parent / ".desktop-integration-enabled"
+            self.assertIn("setup", run(cli, "--help").stdout)
+            cli.unlink()
+            run(sys.executable, helper)  # Startup after a marketplace install.
+            self.assertTrue(cli.is_symlink())
+            for answer in ("", "\n", "no\n"):
+                run(cli, "setup", answer=answer)
+                self.assertFalse(menu.exists())
+                self.assertFalse(login.is_symlink())
+                self.assertFalse(marker.exists())
+                self.assertFalse((home / "data/applications").exists())
+            self.assertNotIn("plugin enable", (home / "calls").read_text())
+
+            login.parent.mkdir(parents=True)
+            login.write_text("existing login config")
+            self.assertNotEqual(run(cli, "setup", answer="yes\n", check=False).returncode, 0)
+            self.assertEqual(login.read_text(), "existing login config")
+            self.assertFalse(menu.exists())
+            login.unlink()
+
+            menu.parent.mkdir(parents=True)
+            custom = {"label": "My removal picker"}
+            menu.write_text(json.dumps({"remove.flatpak": custom}))
+            for _ in range(2):
+                run(cli, "setup", answer="y\n")
+                self.assertEqual(json.loads(menu.read_text()),
+                                 {"install.flatpak": ENTRIES["install.flatpak"], "remove.flatpak": custom})
+                self.assertTrue(login.resolve(strict=True).is_file())
+                self.assertTrue(marker.is_file())
+            self.assertEqual((home / "calls").read_text().count("plugin disable"), 1)
+            run(sys.executable, helper, "--cleanup")
+            self.assertEqual(json.loads(menu.read_text()), {"remove.flatpak": custom})
+            self.assertFalse(marker.exists())
+            self.assertFalse(cli.is_symlink())
+            self.assertFalse(login.is_symlink())
