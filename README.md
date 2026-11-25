@@ -24,13 +24,15 @@ From an existing local checkout, you can install the current copy by running `./
 
 ## Use Flatfind
 
-Open the Omarchy menu and choose **Install → Flatpak** to find apps or **Remove → Flatpak** to uninstall them. Type to search, press **Tab** to select multiple apps, and press **Enter** to continue.
+Open the Omarchy menu and choose **Install → Flatpak** to find apps or **Remove → Flatpak** to uninstall them. Type to search and press **Tab** to select multiple apps.
+
+When installing, press **Enter** to review the selected apps. Flatpak shows the app IDs, source, and requested permissions, including any filesystem, device, and D-Bus access. Confirm at Flatpak's prompt to install, or answer **n** to cancel. Flatpak asks separately for each source and installation scope in a batch.
 
 ![Flatfind searching for photo apps with two results selected and a details pane below the list.](assets/screenshots/install.png)
 
 ## Uninstall the plugin
 
-Disable Flatfind, clean up its launcher links and login integration, then remove the plugin.
+Disable Flatfind, clean up its menu entries, launcher links, and login integration, then remove the plugin.
 
 ```sh
 omarchy plugin disable wfo.flatfind &&

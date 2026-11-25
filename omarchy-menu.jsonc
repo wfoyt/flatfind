@@ -1,4 +1,16 @@
 {
-  "install.flatpak": {"icon": "󰏓", "label": "Flatpak", "after": "install.package", "when": "[[ -x \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\" ]]", "action": "xdg-terminal-exec --app-id=org.omarchy.terminal \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\""},
-  "remove.flatpak": {"icon": "󰏓", "label": "Flatpak", "after": "remove.package", "when": "[[ -x \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\" ]]", "action": "xdg-terminal-exec --app-id=org.omarchy.terminal \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\" remove"}
+  "install.flatpak": {
+    "icon": "󰏓",
+    "label": "Flatpak",
+    "after": "install.package",
+    "when": "[[ -x \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\" ]] && omarchy plugin list --json | jq -e 'any(.[]; .id == \"wfo.flatfind\" and .enabled == true)' >/dev/null",
+    "action": "[[ -x \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\" ]] && omarchy plugin list --json | jq -e 'any(.[]; .id == \"wfo.flatfind\" and .enabled == true)' >/dev/null && xdg-terminal-exec --app-id=org.omarchy.terminal \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\""
+  },
+  "remove.flatpak": {
+    "icon": "󰏓",
+    "label": "Flatpak",
+    "after": "remove.package",
+    "when": "[[ -x \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\" ]] && omarchy plugin list --json | jq -e 'any(.[]; .id == \"wfo.flatfind\" and .enabled == true)' >/dev/null",
+    "action": "[[ -x \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\" ]] && omarchy plugin list --json | jq -e 'any(.[]; .id == \"wfo.flatfind\" and .enabled == true)' >/dev/null && xdg-terminal-exec --app-id=org.omarchy.terminal \"$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind\" remove"
+  }
 }

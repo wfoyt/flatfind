@@ -4,7 +4,7 @@ import argparse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import gzip
-from http.client import HTTPException
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -17,15 +17,22 @@ import termios
 import time
 import tty
 from typing import NamedTuple
-from urllib.request import urlopen
 import xml.etree.ElementTree as ET
+import zlib
 
 
 CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 FLATHUB_REPO = "https://dl.flathub.org/repo"
 FLATHUB_URLS = (FLATHUB_REPO, "https://flathub.org/repo")
 APPSTREAM_MAX_AGE = 24 * 60 * 60
+APPSTREAM_TRANSFER_TIMEOUT = 10
+APPSTREAM_TIMEOUT = 20
+APPSTREAM_DOWNLOAD_LIMIT = 32 * 1024 * 1024
+APPSTREAM_XML_LIMIT = 128 * 1024 * 1024
+APPSTREAM_CACHE_LIMIT = 32 * 1024 * 1024
+APPSTREAM_ENTRY_LIMIT = 20000
 XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
+APPSTREAM_FIELD_LIMITS = {"name": 256, "summary": 2048, "bundle": 512}
 
 
 class Remote(NamedTuple):
@@ -69,28 +76,85 @@ def flatpak_output(*args):
     return result.stdout
 
 
+class AppstreamMetadata:
+    """Collect only the fields Flatfind displays, without building an XML tree."""
+
+    def __init__(self):
+        self.depth = 0
+        self.component = False
+        self.field = None
+        self.text = None
+        self.name = self.summary = None
+        self.refs = set()
+        self.metadata = {}
+
+    def start(self, tag, attributes):
+        self.depth += 1
+        if self.depth > 64:
+            raise ValueError("Flathub AppStream data is nested too deeply")
+        if self.depth == 2:
+            self.component = tag == "component"
+        elif self.depth == 3 and self.component and tag in APPSTREAM_FIELD_LIMITS:
+            if (tag == "bundle" and attributes.get("type") == "flatpak"
+                    or tag != "bundle" and XML_LANG not in attributes):
+                self.field = tag
+                self.text = ""
+
+    def data(self, text):
+        if self.depth == 3 and self.field and self.text is not None:
+            if len(self.text) + len(text) <= APPSTREAM_FIELD_LIMITS[self.field]:
+                self.text += text
+            else:
+                self.text = None
+
+    def end(self, tag):
+        if self.depth == 3:
+            if self.field == "bundle" and self.text and self.text.startswith("app/"):
+                self.refs.add(self.text)
+                if len(self.refs) > APPSTREAM_ENTRY_LIMIT:
+                    raise ValueError("Flathub AppStream component has too many refs")
+            elif self.field == "name" and self.name is None:
+                self.name = self.text or ""
+            elif self.field == "summary" and self.summary is None:
+                self.summary = self.text or ""
+            self.field = self.text = None
+        elif self.depth == 2 and self.component:
+            if self.name:
+                self.metadata.update((ref, (self.name, self.summary or "")) for ref in self.refs)
+                if len(self.metadata) > APPSTREAM_ENTRY_LIMIT:
+                    raise ValueError("Flathub AppStream data exceeds the app count limit")
+            self.name = self.summary = None
+            self.refs.clear()
+            self.component = False
+        self.depth -= 1
+
+    def doctype(self, name, public_id, system_id):
+        raise ValueError("Flathub AppStream data must not contain a document type")
+
+    def close(self):
+        return self.metadata
+
+
 def download_flathub_metadata(arch):
-    metadata = {}
+    deadline = time.monotonic() + APPSTREAM_TIMEOUT
     url = f"{FLATHUB_REPO}/appstream/{arch}/appstream.xml.gz"
-    with urlopen(url, timeout=5) as response, gzip.GzipFile(fileobj=response) as stream:
-        events = ET.iterparse(stream, events=("start", "end"))
-        _, root = next(events)
-        for event, component in events:
-            if event != "end" or component.tag != "component":
-                continue
-            # The unlocalized fields match Flathub's English catalog.
-            name, summary = (
-                next(
-                    (node.text or "" for node in component.findall(tag) if XML_LANG not in node.attrib),
-                    "",
-                )
-                for tag in ("name", "summary")
-            )
-            if name:
-                for bundle in component.findall("bundle[@type='flatpak']"):
-                    if bundle.text and bundle.text.startswith("app/"):
-                        metadata[bundle.text] = (name, summary)
-            root.remove(component)
+    # Ignore curlrc so it cannot change the fixed source or transfer limits.
+    response = subprocess.run(
+        ["curl", "-q", "--fail", "--silent", "--show-error", "--proto", "=https",
+         "--max-time", str(APPSTREAM_TRANSFER_TIMEOUT), "--max-filesize", str(APPSTREAM_DOWNLOAD_LIMIT), url],
+        capture_output=True, timeout=APPSTREAM_TRANSFER_TIMEOUT + 2, check=True,
+    )
+    remaining = APPSTREAM_XML_LIMIT
+    parser = ET.XMLParser(target=AppstreamMetadata())
+    with gzip.GzipFile(fileobj=BytesIO(response.stdout)) as stream:
+        while chunk := stream.read(min(64 * 1024, remaining + 1)):
+            if len(chunk) > remaining:
+                raise ValueError("Flathub AppStream data exceeds the decoded size limit")
+            if time.monotonic() >= deadline:
+                raise ValueError("Flathub AppStream processing timed out")
+            remaining -= len(chunk)
+            parser.feed(chunk)
+        metadata = parser.close()
     if not metadata:
         raise ValueError("empty Flathub AppStream catalog")
     return metadata
@@ -109,19 +173,21 @@ def flathub_metadata(refresh):
     cache = cache_dir / f"flathub-{arch}.json"
     stale = {}
     try:
-        with cache.open(encoding="utf-8") as stream:
+        with cache.open("rb") as stream:
             modified = os.fstat(stream.fileno()).st_mtime
-            stale = json.load(stream)
+            data = stream.read(APPSTREAM_CACHE_LIMIT + 1)
+            if len(data) <= APPSTREAM_CACHE_LIMIT:
+                stale = json.loads(data)
         if not isinstance(stale, dict):
             stale = {}
         if stale and not refresh and time.time() - modified < APPSTREAM_MAX_AGE:
             return stale
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         pass
 
     try:
         metadata = download_flathub_metadata(arch)
-    except (OSError, EOFError, HTTPException, ET.ParseError, ValueError) as exc:
+    except (OSError, EOFError, subprocess.SubprocessError, ET.ParseError, ValueError, zlib.error) as exc:
         if refresh or not stale:
             warn(f"could not refresh Flathub display names: {exc}")
         return stale
@@ -131,7 +197,8 @@ def flathub_metadata(refresh):
         with TemporaryDirectory(dir=cache_dir) as directory:
             staged = Path(directory) / cache.name
             staged.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
-            staged.replace(cache)
+            if staged.stat().st_size <= APPSTREAM_CACHE_LIMIT:
+                staged.replace(cache)
     except OSError as exc:
         warn(f"could not cache Flathub display names: {exc}")
     return metadata
@@ -269,7 +336,7 @@ def pick_packages(rows, query, *, removing=False):
     # fzf searches only visible fields when using --with-nth. Put the ID and
     # metadata past the right edge with a tab stop wider than a Linux TTY.
     title, prompt, action = ("flatfind remove", "Search installed apps", "Remove") if removing else (
-        "flatfind", "Search Flatpak", "Install"
+        "flatfind", "Search Flatpak", "Review install"
     )
     selection_footer = (
         'if [ "$FZF_SELECT_COUNT" -gt 0 ]; then '
@@ -308,7 +375,8 @@ def choose_remote(name, targets):
 
 
 def show_completion(status):
-    message = f"Failed (exit status {status})." if status else "Done!"
+    # Flatpak also returns a nonzero status when the user declines the transaction.
+    message = f"Flatpak exited with status {status}." if status else "Done!"
     try:
         with open("/dev/tty", "r+b", buffering=0) as terminal:
             fd = terminal.fileno()
@@ -393,11 +461,16 @@ def main():
             return 0
         groups[remote].append(ref)
     status = 0
-    for remote, refs in groups.items():
-        status = subprocess.call(["flatpak", "install", "--assumeyes", remote.scope, "--", remote.name, *refs])
-        if status:
-            break
     if groups:
+        # Flatpak shows permissions and the source for the resolved transaction
+        # before asking for approval. Keep the terminal available for its prompt.
+        with open("/dev/tty") as terminal:
+            for remote, refs in groups.items():
+                status = subprocess.call(
+                    ["flatpak", "install", remote.scope, "--", remote.name, *refs], stdin=terminal
+                )
+                if status:
+                    break
         show_completion(status)
     return status
 
@@ -407,6 +480,9 @@ if __name__ == "__main__":
         sys.exit(main())
     except KeyboardInterrupt:
         sys.exit(130)
+    except subprocess.TimeoutExpired as exc:
+        warn(f"Flatpak {exc.cmd[1]} timed out after {exc.timeout} seconds")
+        sys.exit(1)
     except (OSError, RuntimeError) as exc:
         warn(exc)
         sys.exit(1)

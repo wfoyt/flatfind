@@ -1,6 +1,7 @@
 """Set up Flatfind's Omarchy menu entries and keep Flatpak desktop exports visible."""
 
 import argparse
+from collections import Counter
 import fcntl
 import json
 import os
@@ -25,6 +26,7 @@ UWSM_DEST = CONFIG_HOME / "uwsm/env.d" / UWSM_SOURCE.name
 MENU_FILE = HOME / ".config/omarchy/extensions/omarchy-menu.jsonc"
 PLUGIN_PICKER = "$HOME/.config/omarchy/plugins/wfo.flatfind/flatfind"
 LEGACY_PICKER = "$HOME/.local/bin/flatfind"
+EXECUTABLE_GUARD = f'[[ -x "{PLUGIN_PICKER}" ]]'
 # Keep offsets in the original file and leave punctuation inside strings alone.
 JSON_STRING = r'"(?:\\.|[^"\\])*"'
 JSONC_COMMENTS = re.compile(JSON_STRING + r"|^[ \t]*//[^\r\n]*", re.M)
@@ -45,21 +47,31 @@ def object_members(text, opening):
         rest = text[end:].lstrip()
         start = len(text) - len(rest[1:].lstrip())
         _, end = decode(text, start)
-        yield key, (start, end)
+        yield key, (key_start, start, end)
         rest = text[end:].lstrip()
         if rest.startswith("}"):
             break
         offset = len(text) - len(rest) + 1
 
 
-def menu_with_entries(original, entries):
+def previous_menu_entries(entry):
+    action = entry["action"].rsplit(" && ", 1)[-1]
+    legacy = {name: value for name, value in entry.items() if name != "when"}
+    legacy["action"] = action.replace(PLUGIN_PICKER, LEGACY_PICKER)
+    return ({**entry, "when": EXECUTABLE_GUARD, "action": action}, legacy)
+
+
+def menu_with_entries(original, entries, *, cleanup=False):
     """Preserve custom rows and migrate the previously shipped Flatfind rows."""
     def mask(match):
         token = match[0]
         return token if token.startswith('"') else " " * len(token)
 
-    clean = JSONC_TRAILING_COMMAS.sub(mask, JSONC_COMMENTS.sub(mask, original))
+    uncommented = JSONC_COMMENTS.sub(mask, original)
+    clean = JSONC_TRAILING_COMMAS.sub(mask, uncommented)
     if not clean.strip():
+        if cleanup:
+            return original
         return original + ("\n" if original and not original.endswith("\n") else "") + json.dumps(
             entries, ensure_ascii=False, indent=2
         ) + "\n"
@@ -70,30 +82,42 @@ def menu_with_entries(original, entries):
     source = menu.get("items")
     opening = len(clean) - len(clean.lstrip())
     if isinstance(source, dict):
-        opening, _ = dict(object_members(clean, opening))["items"]
+        _, opening, _ = dict(object_members(clean, opening))["items"]
     else:
         source = menu
 
-    locations = dict(object_members(clean, opening))
+    members = list(object_members(clean, opening))
+    # Leave ambiguous duplicate keys alone, including a user's earlier row.
+    key_counts = Counter(key for key, _ in members)
     replacements = []
-    for key, entry in entries.items():
-        legacy = {name: value for name, value in entry.items() if name != "when"}
-        legacy["action"] = legacy["action"].replace(PLUGIN_PICKER, LEGACY_PICKER)
-        if source.get(key) == legacy:
-            start, end = locations[key]
+    removed_tail = False
+    for index, (key, (key_start, start, end)) in enumerate(reversed(members)):
+        entry = entries.get(key)
+        shipped = entry is not None and key_counts[key] == 1 and source[key] in (entry, *previous_menu_entries(entry))
+        if cleanup:
+            if shipped:
+                replacements.append((key_start, end, ""))
+            # Remove the trailing separator as well when deleting the last rows.
+            if shipped or removed_tail:
+                rest = uncommented[end:].lstrip()
+                if rest.startswith(","):
+                    comma = len(uncommented) - len(rest)
+                    replacements.append((comma, comma + 1, ""))
+            removed_tail = shipped and (removed_tail or index == 0)
+        elif shipped and source[key] != entry:
             replacements.append((start, end, json.dumps(entry, ensure_ascii=False)))
     for start, end, value in sorted(replacements, reverse=True):
         original = original[:start] + value + original[end:]
 
     missing = {key: value for key, value in entries.items() if key not in source}
-    if not missing:
+    if cleanup or not missing:
         return original
     rows = [f"  {json.dumps(key)}: {json.dumps(value, ensure_ascii=False)}" for key, value in missing.items()]
     insertion = ",\n".join(rows) + ("," if source else "")
     return original[:opening + 1] + "\n" + insertion + "\n" + original[opening + 1:]
 
 
-def install_menu():
+def update_menu(*, cleanup=False):
     entries = json.loads((REPO / "omarchy-menu.jsonc").read_text(encoding="utf-8"))
     menu_path = MENU_FILE.resolve()
     menu_path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,7 +126,7 @@ def install_menu():
         mode = stat.S_IMODE(menu_path.stat().st_mode)
     except FileNotFoundError:
         original, mode = b"", 0o644
-    updated = menu_with_entries(original.decode(), entries).encode()
+    updated = menu_with_entries(original.decode(), entries, cleanup=cleanup).encode()
     if updated == original:
         return
     with NamedTemporaryFile(dir=menu_path.parent, delete=False) as staged:
@@ -112,12 +136,15 @@ def install_menu():
             staged.close()
             staged_path.chmod(mode)
             if (menu_path.read_bytes() if menu_path.exists() else b"") != original:
-                raise ValueError("the Omarchy menu extension changed during setup")
+                raise ValueError("the Omarchy menu extension changed during the update")
             staged_path.replace(menu_path)
         finally:
             staged_path.unlink(missing_ok=True)
     # FileView may have started before the user's extension directory existed.
-    subprocess.run(["omarchy", "menu", "refresh"], timeout=4, capture_output=True, check=False)
+    try:
+        subprocess.run(["omarchy", "menu", "refresh"], timeout=4, capture_output=True, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f"could not refresh the Omarchy menu: {error}")
 
 
 def link_if_absent(path, target):
@@ -150,32 +177,66 @@ def directory_stamp(path):
     return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def reconcile_exports(exports, native):
-    # A visible native export already provides the canonical desktop id.
-    visible = set()
+def links_to(path, target):
+    try:
+        return path.readlink() == target
+    except OSError:
+        return False
+
+
+def desktop_files(directory, ancestors=frozenset()):
+    try:
+        info = directory.stat()
+        identity = (info.st_dev, info.st_ino)
+        if identity in ancestors:
+            return
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                try:
+                    is_directory = entry.is_dir()
+                except OSError:
+                    continue
+                if is_directory:
+                    yield from desktop_files(Path(entry.path), ancestors | {identity})
+                elif entry.name.endswith(".desktop"):
+                    yield Path(entry.path)
+    except OSError:
+        return
+
+
+def native_desktop_ids(roots):
+    ids = set()
+    for root in roots:
+        applications = root / "applications"
+        for entry in desktop_files(applications):
+            if entry.parent == APPLICATIONS and links_to(entry, EXPORT_LINKS / entry.name):
+                continue
+            # XDG derives desktop IDs from the relative path, including subdirectories.
+            ids.add("-".join(entry.relative_to(applications).parts))
+    return ids
+
+
+def reconcile_exports(exports, visible):
     fallback = {}
     for export in exports:
         for entry in (export / "applications").glob("*.desktop"):
             if entry.is_file():
-                if export in native:
-                    visible.add(entry.name)
-                else:
-                    fallback.setdefault(entry.name, entry)
+                fallback.setdefault(entry.name, entry)
     needed = fallback.keys() - visible
     for link in EXPORT_LINKS.glob("*.desktop"):
         if not link.is_symlink() or link.name in needed:
             continue
         local = APPLICATIONS / link.name
-        if local.is_symlink() and local.readlink() == link:
+        if links_to(local, link):
             local.unlink(missing_ok=True)
         link.unlink(missing_ok=True)
     for name in needed:
         source = fallback[name]
         link = EXPORT_LINKS / name
-        if link.is_symlink() and link.readlink() != source:
+        if link.is_symlink() and not links_to(link, source):
             link.unlink(missing_ok=True)
         link_if_absent(link, source)
-        if link.is_symlink() and link.readlink() == source:
+        if links_to(link, source):
             link_if_absent(APPLICATIONS / name, link)
 
     # Quickshell watches this directory on Omarchy. A directory change also
@@ -189,15 +250,23 @@ def watch_exports():
     dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
     native = {DATA_HOME, *(Path(path) for path in dirs.split(":") if path.startswith("/"))}
     last = None
+    last_exports = None
     next_discovery = 0
+    next_native_scan = 0
     while True:
-        if time.monotonic() >= next_discovery:
+        now = time.monotonic()
+        if now >= next_discovery:
             exports = installation_exports()
-            next_discovery = time.monotonic() + 60
-        current = tuple((root, directory_stamp(root / "applications")) for root in exports)
-        if current != last:
-            reconcile_exports(exports, native)
-            last = current
+            next_discovery = now + 60
+        export_stamps = tuple((root, directory_stamp(root / "applications")) for root in exports)
+        if export_stamps != last_exports or now >= next_native_scan:
+            visible = native_desktop_ids(native)
+            current = (export_stamps, visible)
+            if current != last:
+                reconcile_exports(exports, visible)
+                last = current
+            next_native_scan = now + 2
+            last_exports = export_stamps
         # Keep no orphan watcher when the Quickshell process exits or reloads.
         if select.select([sys.stdin], [], [], 0.5)[0] and not sys.stdin.buffer.read1(1):
             return
@@ -205,7 +274,7 @@ def watch_exports():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cleanup", action="store_true", help="remove Flatfind's launcher links and UWSM drop-in")
+    parser.add_argument("--cleanup", action="store_true", help="remove Flatfind's menu entries, launcher links, and UWSM drop-in")
     args = parser.parse_args()
     EXPORT_LINKS.mkdir(parents=True, exist_ok=True)
     with (EXPORT_LINKS / ".lock").open("a") as lock:
@@ -217,8 +286,9 @@ def main():
         except BlockingIOError:
             raise SystemExit("Disable the Flatfind plugin before cleaning up its launcher links.")
         if args.cleanup:
+            update_menu(cleanup=True)
             reconcile_exports((), set())
-            if UWSM_DEST.is_symlink() and UWSM_DEST.readlink() == UWSM_SOURCE:
+            if links_to(UWSM_DEST, UWSM_SOURCE):
                 UWSM_DEST.unlink(missing_ok=True)
             return
         try:
@@ -226,7 +296,7 @@ def main():
         except OSError as error:
             log(f"could not install the UWSM drop-in: {error}")
         try:
-            install_menu()
+            update_menu()
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             log(f"could not add the Omarchy menu entries: {error}")
         watch_exports()
@@ -235,5 +305,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise SystemExit(str(error)) from error
